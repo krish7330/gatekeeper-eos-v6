@@ -30,7 +30,8 @@ python factory.py specs/batch.yaml -o my_output
 ## Usage
 
 ```
-usage: factory.py [-h] [--output OUTPUT] [--list-patterns] spec
+usage: factory.py [-h] [--output OUTPUT] [--list-patterns] [--preview]
+                  [--verbose] spec
 
 Generate multi-agent AI systems from YAML specs.
 
@@ -42,6 +43,21 @@ optional arguments:
   --output OUTPUT, -o OUTPUT
                         Output directory (default: ./generated)
   --list-patterns       List available targets and patterns, then exit
+  --preview             Preview folder structure without writing any files
+  --verbose, -v         Show per-file line counts and sizes in preview mode
+```
+
+### Examples
+
+```bash
+# Preview the output structure without writing anything
+python factory.py specs/batch.yaml --preview
+
+# Preview with detailed file stats (lines, bytes per file)
+python factory.py specs/batch.yaml --preview --verbose
+
+# Generate all systems
+python factory.py specs/batch.yaml
 ```
 
 ## Spec Format
