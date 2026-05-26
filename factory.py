@@ -211,19 +211,49 @@ def generate_all(spec: dict, env: Environment) -> list[Path]:
 # ---------------------------------------------------------------------------
 # Preview mode
 # ---------------------------------------------------------------------------
-def preview_all(spec: dict, output_dir: Path) -> None:
-    """Print a tree of what would be generated without writing any files."""
+def preview_all(
+    spec: dict,
+    output_dir: Path,
+    env: Environment | None = None,
+    verbose: bool = False,
+) -> None:
+    """Print a tree of what would be generated without writing any files.
+
+    When *verbose* is True and *env* is provided, renders each template
+    in-memory and shows line counts and byte sizes alongside the file tree.
+    """
     for system in spec.get("systems", []):
         name = system["name"]
         target = system["target"]
         pattern = system["pattern"]
 
         print(f"\n  {output_dir / name}/")
-        print(f"  ├── main.py")
-        print(f"  ├── requirements.txt")
-        print(f"  ├── README.md")
-        print(f"  ├── AGENTS.md")
-        print(f"  └── system.yaml")
+
+        if verbose and env:
+            main_code = _render_template(env, f"{target}/{pattern}/main.py.j2", system)
+            reqs_code = _render_template(env, f"{target}/{pattern}/requirements.txt.j2", system)
+            readme_code = _generate_readme(system)
+            agents_code = _generate_agents_md(system)
+            config_code = _generate_system_config(system)
+
+            files_info = [
+                ("main.py", len(main_code.splitlines()), len(main_code)),
+                ("requirements.txt", len(reqs_code.splitlines()), len(reqs_code)),
+                ("README.md", len(readme_code.splitlines()), len(readme_code)),
+                ("AGENTS.md", len(agents_code.splitlines()), len(agents_code)),
+                ("system.yaml", len(config_code.splitlines()), len(config_code)),
+            ]
+
+            for i, (fname, lines, size) in enumerate(files_info):
+                prefix = "├── " if i < 4 else "└── "
+                print(f"  {prefix}{fname}  ({lines} lines, {size} B)")
+        else:
+            print(f"  ├── main.py")
+            print(f"  ├── requirements.txt")
+            print(f"  ├── README.md")
+            print(f"  ├── AGENTS.md")
+            print(f"  └── system.yaml")
+
         print(f"\n    target: {target}  |  pattern: {pattern}  |  agents: {len(system.get('agents', []))}")
 
 
@@ -253,6 +283,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--preview",
         action="store_true",
         help="Preview generated folder structure without writing any files",
+    )
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Show detailed file stats in preview mode (line counts, sizes)",
     )
     return parser.parse_args(argv)
 
@@ -295,8 +331,9 @@ def main(argv: list[str] | None = None) -> int:
     # Preview or generate
     output_dir = Path(args.output)
     if args.preview:
-        print(f"Previewing {len(spec['systems'])} system(s) in {output_dir}/ …")
-        preview_all(spec, output_dir)
+        label = "Previewing" if not args.verbose else "Verbose previewing"
+        print(f"{label} {len(spec['systems'])} system(s) in {output_dir}/ …")
+        preview_all(spec, output_dir, env=env, verbose=args.verbose)
         print(f"\n(No files written — use without --preview to generate)")
         return 0
 

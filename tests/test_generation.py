@@ -164,6 +164,41 @@ def test_generate_all_processes_all_systems(tmp_path):
 # Preview mode
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("target", sorted(SUPPORTED_TARGETS))
+def test_preview_verbose_shows_line_counts(tmp_path, target, capsys):
+    """--preview --verbose should show line counts and sizes without writing files."""
+    from factory import main
+
+    spec_content = f"""
+systems:
+  - name: verbose-{target}
+    target: {target}
+    pattern: handoffs
+    agents:
+      - name: triage
+        instructions: Route users.
+      - name: billing
+        instructions: Handle billing.
+"""
+    spec_file = tmp_path / "spec.yaml"
+    spec_file.write_text(spec_content)
+
+    output_dir = tmp_path / "verbose-output"
+
+    exit_code = main([str(spec_file), "--preview", "--verbose", "-o", str(output_dir)])
+
+    assert exit_code == 0, f"main() returned non-zero exit code: {exit_code} for {target}"
+    assert not output_dir.exists(), (
+        f"Verbose preview ({target}) created output directory at {output_dir}, but should not write files"
+    )
+
+    # Verify stdout contains line counts and sizes
+    captured = capsys.readouterr()
+    assert "lines" in captured.out, f"Verbose output missing 'lines' for {target}"
+    assert "B" in captured.out, f"Verbose output missing byte size for {target}"
+    assert "main.py" in captured.out
+
+
+@pytest.mark.parametrize("target", sorted(SUPPORTED_TARGETS))
 def test_preview_mode_does_not_write_files(tmp_path, target):
     """--preview flag should print file tree without writing anything to disk."""
     from factory import main
