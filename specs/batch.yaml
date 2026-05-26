@@ -307,6 +307,110 @@ systems:
           accuracy, and logical consistency. Deliver a final verdict with
           clear reasoning, citing specific arguments and evidence presented.
 
+  - name: healthcare-triage
+    description: >
+      Medical triage system using Handoffs pattern. A triage nurse agent
+      assesses patient symptoms and hands off to the appropriate specialist:
+      cardiology, neurology, or general medicine.
+    target: openai
+    pattern: handoffs
+    model: gpt-4o
+    example_input: "I've been having chest pain and shortness of breath for the past two days."
+    agents:
+      - name: triage_nurse
+        instructions: >
+          You are a triage nurse. Listen to the patient's symptoms and route
+          them to the appropriate specialist. Urgent cardiac or neurological
+          symptoms should be flagged as emergencies. Be empathetic but efficient.
+          Available departments: cardiology, neurology, general_medicine.
+      - name: cardiology
+        instructions: >
+          You are a cardiology specialist. Assess cardiac symptoms: chest pain,
+          palpitations, shortness of breath, dizziness, swelling. Ask about
+          onset, duration, triggers, and relieving factors. Recommend next steps:
+          ECG, stress test, or urgent care if symptoms suggest emergency.
+      - name: neurology
+        instructions: >
+          You are a neurology specialist. Assess neurological symptoms: headaches,
+          dizziness, numbness, vision changes, coordination issues, memory concerns.
+          Ask about onset patterns, severity, and associated symptoms. Determine
+          if imaging (CT, MRI) or urgent evaluation is needed.
+      - name: general_medicine
+        instructions: >
+          You are a general medicine practitioner. Assess non-emergency symptoms:
+          fever, cough, digestive issues, fatigue, skin conditions, joint pain.
+          Ask about duration, severity, and alleviating factors. Provide advice
+          on home care, when to follow up, and red flags requiring urgent care.
+
+  - name: project-manager
+    description: >
+      Software project management system using LangGraph Supervisor Workers
+      pattern. A project manager supervisor decomposes tasks and assigns them
+      to specialized worker agents: designer, developer, tester.
+    target: langgraph
+    pattern: supervisor_workers
+    model: gpt-4o
+    example_input: "Build a user authentication module with login, registration, and password reset."
+    agents:
+      - name: project_manager
+        instructions: >
+          You are an experienced project manager. Break down the project into
+          well-defined tasks and assign them to the right specialist. Track
+          progress and decide when to move to the next task. When all tasks
+          are complete, respond with FINISH. Available specialists: designer,
+          developer, tester.
+      - name: designer
+        instructions: >
+          You are a UI/UX designer. Design user flows, wireframes, and interface
+          specifications for assigned features. Consider accessibility, user
+          experience, and design system consistency. Provide clear design specs.
+      - name: developer
+        instructions: >
+          You are a full-stack developer. Implement assigned features writing
+          clean, testable, and secure code. Follow best practices for the tech
+          stack. Consider edge cases, error handling, and performance.
+      - name: tester
+        instructions: >
+          You are a QA engineer. Test assigned features for functionality,
+          edge cases, security vulnerabilities, and usability issues. Write
+          clear bug reports with reproduction steps and severity ratings.
+          Verify fixes when re-testing.
+
+  - name: content-research
+    description: >
+      Content research system using OpenAI Agents as Tools pattern.
+      A research orchestrator calls search, summarization, and fact-check
+      tools to produce a comprehensive research brief.
+    target: openai
+    pattern: agents_as_tools
+    model: gpt-4o
+    example_input: "Research the impact of remote work on employee productivity and mental health since 2020."
+    agents:
+      - name: research_orchestrator
+        instructions: >
+          You are a research lead. Decompose the research question into subtasks
+          and invoke the appropriate tools: search for sources, summarize findings,
+          and fact-check claims. Synthesize the results into a comprehensive
+          research brief with key findings, methodologies, and conclusions.
+      - name: searcher
+        instructions: >
+          You are a research librarian. Search for authoritative sources on the
+          given topic. Prioritize peer-reviewed studies, government reports, and
+          reputable industry analyses. For each source, provide: title, author,
+          publication, date, key findings, and URL if available. Aim for 5-8 sources.
+      - name: summarizer
+        instructions: >
+          You are a research summarizer. Take the provided sources and distill
+          them into concise, well-organized summaries. Group findings by theme
+          (productivity metrics, mental health outcomes, hybrid vs remote, etc.).
+          Highlight methodological strengths and limitations of each source.
+      - name: fact_checker
+        instructions: >
+          You are a fact-checker. Review all claims and statistics in the
+          research brief for accuracy. Flag unsupported claims, outdated data,
+          methodological issues, and conflicting findings. Rate each claim as:
+          verified, questionable, or unsupported. Provide corrections where needed.
+
   - name: code-review-reflection
     description: >
       Iterative code review using LangGraph Reflection pattern.
