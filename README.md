@@ -37,10 +37,8 @@ How should your agents coordinate?
 ├── All agents need to analyze the same input?
 │   ├── From different perspectives, independently?
 │   │   └── → **Broadcast / Mesh**
-│   └── Debating opposing positions toward consensus?│   └── → **Debate / Consensus**
-│
-├── Multiple agents argue opposing positions?
-│   └── → **Debate / Consensus** (arguments + judge verdict)
+│   └── Debating opposing positions toward consensus?
+│       └── → **Debate / Consensus**
 │
 ├── Output needs iterative quality improvement?
 │   └── → **Reflection** (generator + critic loop)
@@ -64,6 +62,105 @@ How should your agents coordinate?
 | **Reflection** | Generate → critique → revise | Code review, essay drafting, iterative refinement | 2 (generator + critic) | Yes (up to `max_rounds`) |
 | **Handoffs** | Agent-to-agent delegation | Customer support, conversational workflows | N (general) | No |
 | **Agents as Tools** | Orchestrator calls specialists | Code review, research, tool-augmented workflows | 3+ (orchestrator + tools) | No |
+
+---
+
+## Architecture Comparison
+
+### Tradeoffs at a Glance
+
+| Pattern | Latency | Cost / Run | Determinism | Parallelism | Failure Mode | Ideal Agent Count |
+|---------|---------|------------|-------------|-------------|--------------|-------------------|
+| **Chain** | 🟢 O(N) sequential | N calls | 🟢 High — fixed pipeline | Sequential | One agent fails → pipeline stalls; no recovery | 2–5 |
+| **Broadcast** | 🟢 O(1) wall-clock | N calls | 🟢 Medium — all run same input | Full parallel | One agent fails → partial results still merged | 2–8 |
+| **Debate** | 🟢 O(1) wall-clock | N calls | 🟡 Medium — depends on judge quality | Full parallel (debaters) | Weak judge → poor verdict; debater failure → missing perspective | 3–6 |
+| **Reflection** | 🟡 O(R) sequential (R = rounds) | 2R calls | 🟡 Low — output evolves each round | Sequential (loop) | Critic always approves → no iteration; critic never approves → max rounds waste | 2 (fixed) |
+| **Router Manager** | 🟢 O(1) sequential | 2 calls | 🟢 High — classification → dispatch | Sequential | Misclassification → wrong specialist; no recovery path | 3–6 |
+| **Supervisor Workers** | 🟡 O(N) sequential with loops | Variable | 🔴 Low — dynamic, emergent | Sequential with loops | Supervisor loops forever → no termination guarantee; worker confusion | 3–6 |
+| **Handoffs** | 🟢 O(1) sequential | 1–N calls | 🟡 Medium — depends on triage | Sequential | Triage misroutes → user frustration; no built-in escalation if wrong | 2–5 |
+| **Agents as Tools** | 🟢 O(1) sequential | Variable | 🟡 Medium — orchestrated | Sequential (tool calls) | Orchestrator over-tools → wasted calls; tool failure → orchestrator must handle | 3–6 |
+
+> **Legend:** 🟢 Low/High — favorable — 🟡 Medium — acceptable — 🔴 High/Low — caution
+
+### Cost & Latency
+
+| Scenario | Best Pattern | Why |
+|----------|-------------|-----|
+| Need the **fastest** answer | **Broadcast** or **Router Manager** | Single round-trip; no loops |
+| Need the **cheapest** answer | **Chain** (2 agents) | Minimal calls with linear flow |
+| Need the **highest quality** | **Reflection** | Iterative refinement up to `max_rounds` |
+| Need **both speed and quality** | **Debate** | Parallel arguments + single judge pass |
+| **Budget-constrained** (fixed call count) | **Chain**, **Broadcast**, **Router Manager** | Predictable N calls |
+| **Variable budget** (adaptive) | **Supervisor Workers** | Supervisor decides how many calls |
+
+### Failure Modes & Mitigations
+
+| Pattern | Failure Mode | Impact | Mitigation in Template |
+|---------|-------------|--------|----------------------|
+| **Chain** | Agent produces bad intermediate output | All downstream agents operate on garbage | Each agent must validate/parse input; templates use structured prompts |
+| **Broadcast** | One agent hallucinates or fails | Partial result lost; remaining agents unaffected | `asyncio.gather()` collects all — survivor outputs still merge |
+| **Debate** | Judge favors wrong argument | Verdict is incorrect | Judge prompt explicitly instructs evidence-based evaluation; debaters must cite specifics |
+| **Reflection** | Critic always approves prematurely | Low-quality output accepted | `APPROVED` keyword check is strict (`startswith`); critic instructed to require high standards |
+| **Reflection** | Critic never approves | Exhausts `max_rounds` — output is last revision, not necessarily good | Template shows final output regardless; user sees all rounds |
+| **Router Manager** | Router misclassifies | Wrong specialist receives the task | Router instructions emphasize accuracy; no recovery in current template |
+| **Supervisor Workers** | Supervisor loops indefinitely | Infinite runtime, unbounded cost | No hard termination safeguard — rely on LLM choosing `FINISH`; consider adding max-turn limit |
+| **Handoffs** | Triage misroutes | Specialist can't handle the request | Specialist has full context; no recovery handoff in current template |
+| **Agents as Tools** | Orchestrator calls too many tools | Wasted API calls | Tool descriptions must be clear; orchestrator decides invocation count |
+
+### Pattern Selection Guide
+
+**Ask these questions in order to narrow your choice:**
+
+1. **Do agents need to see each other's outputs?**
+   - No → **Broadcast** (independent) or **Debate** (opposing positions)
+   - Yes → Chain, Reflection, or Supervisor Workers
+
+2. **Is the execution path known at design time?**
+   - Yes, fixed → **Chain**
+   - No, dynamic → **Supervisor Workers**, **Router Manager**, or **Handoffs**
+
+3. **Does the same agent handle the full conversation?**
+   - No, conversation moves between agents → **Handoffs**
+   - Yes, one orchestrator decides → **Agents as Tools**
+
+4. **Does quality need to improve iteratively?**
+   - Yes → **Reflection**
+   - No → All other patterns
+
+5. **What's the maximum acceptable latency?**
+   - < 2 sequential calls → **Broadcast**, **Debate**, **Router Manager**
+   - 2–5 sequential calls → **Chain**, **Handoffs**, **Agents as Tools**
+   - Variable / loop-capable → **Reflection**, **Supervisor Workers**
+
+### Quick Decision Matrix
+
+```
+                         Sequential
+                             │
+          Fixed pipeline ◄───┼───► Dynamic routing
+                │            │            │
+            Chain            │      Supervisor Workers
+                             │
+                    ┌────────┴────────┐
+                    │                 │
+               Same input        Different tasks
+                    │                 │
+          ┌────────┼────────┐         │
+          │        │        │         │
+     Independent Opposing  Iterative  One orchestrator
+          │        │        │         │
+      Broadcast  Debate  Reflection   │
+                              ┌───────┴───────┐
+                              │               │
+                          Classify then   Call as tools
+                          hand off            │
+                              │        Agents as Tools
+                         Router Mgr
+
+                      Conversational handoff?
+                              │
+                          Handoffs
+```
 
 ---
 
