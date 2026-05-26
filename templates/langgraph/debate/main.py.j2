@@ -1,0 +1,142 @@
+"""
+{{ system.name }} - {{ system.description | trim }}
+Pattern: Debate / Consensus (LangGraph)
+
+Multiple agents argue from assigned positions in parallel, then a judge
+evaluates all arguments and delivers a final verdict or consensus.
+"""
+
+from typing import TypedDict, Annotated, Sequence
+from operator import add
+import os
+
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+
+
+# ---------------------------------------------------------------------------
+# State
+# ---------------------------------------------------------------------------
+class AgentState(TypedDict):
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+
+
+# ---------------------------------------------------------------------------
+# Debate agents (run in parallel)
+# ---------------------------------------------------------------------------
+{% set debaters = system.agents[:-1] %}
+{% set judge = system.agents[-1] %}
+
+{% for agent in debaters %}
+def {{ agent.name }}_node(state: AgentState):
+    """{{ agent.instructions | trim }}"""
+    llm = ChatOpenAI(model="{{ system.model }}")
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """{{ agent.instructions | trim }}"""),
+        ("messages", "{messages}"),
+    ])
+    chain = prompt | llm
+    result = chain.invoke(state)
+    return {"messages": [result]}
+
+{% endfor %}
+
+# ---------------------------------------------------------------------------
+# Judge node (fan-in)
+# ---------------------------------------------------------------------------
+def {{ judge.name }}_node(state: AgentState):
+    """Evaluate all debate positions and deliver a verdict."""
+    llm = ChatOpenAI(model="{{ system.model }}")
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """{{ judge.instructions | trim }}
+
+You are the judge in a structured debate. Below you will find arguments
+from multiple positions. Evaluate each position for:
+  - Strength of reasoning and evidence
+  - Logical consistency
+  - Relevance to the original question
+
+Then deliver your verdict: which position is strongest and why.
+If a consensus position emerges across debaters, synthesize it.""".strip()),
+        ("messages", "{messages}"),
+    ])
+    chain = prompt | llm
+    result = chain.invoke(state)
+    return {"messages": [result]}
+
+
+# ---------------------------------------------------------------------------
+# Graph construction (fan-out to all debaters, fan-in to judge)
+# ---------------------------------------------------------------------------
+builder = StateGraph(AgentState)
+
+# Add all debater nodes
+{% for agent in debaters %}
+builder.add_node("{{ agent.name }}", {{ agent.name }}_node)
+{% endfor %}
+# Add judge node
+builder.add_node("{{ judge.name }}", {{ judge.name }}_node)
+
+# Fan-out: START connects to every debater in parallel
+{% for agent in debaters %}
+builder.add_edge(START, "{{ agent.name }}")
+{% endfor %}
+
+# Fan-in: every debater connects to the judge
+{% for agent in debaters %}
+builder.add_edge("{{ agent.name }}", "{{ judge.name }}")
+{% endfor %}
+
+# Judge produces the final verdict
+builder.add_edge("{{ judge.name }}", END)
+
+graph = builder.compile()
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def main() -> None:
+    user_input = os.environ.get("USER_INPUT", "{{ system.example_input }}")
+    print(f"User: {user_input}\n")
+
+    result = graph.invoke({"messages": [HumanMessage(content=user_input)]})
+
+    # Display individual debate arguments (AI messages before the last)
+    ai_messages = [
+        msg for msg in result["messages"]
+        if hasattr(msg, "content") and msg.content and msg.type == "ai"
+    ]
+
+    print("=" * 60)
+    print("  DEBATE ROUND — Positions")
+    print("=" * 60)
+    for msg in ai_messages[:-1]:
+        print(f"\n{msg.content}\n")
+        print("-" * 40)
+
+    # The last AI message is the judge's verdict
+    if ai_messages:
+        print("=" * 60)
+        print("  JUDGE'S VERDICT")
+        print("=" * 60)
+        print(f"\n{ai_messages[-1].content}")
+
+    # Summary
+    print("\n" + "=" * 60)
+    print("  DEBATE SUMMARY")
+    print("=" * 60)
+    debater_names = [
+        {% for agent in debaters %}
+        "{{ agent.name | replace('_', ' ') | title }}"{% if not loop.last %},{% endif %}
+        {% endfor %}
+    ]
+    print(f"\nDebaters: {len(debater_names)} positions")
+    print(f"Judge: {{ judge.name | replace('_', ' ') | title }}")
+
+
+if __name__ == "__main__":
+    main()

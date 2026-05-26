@@ -1,0 +1,93 @@
+"""
+{{ system.name }} - {{ system.description | trim }}
+Pattern: Debate / Consensus (OpenAI Agents SDK)
+
+Multiple agents argue from assigned positions, then a judge evaluates
+all arguments and delivers a final verdict or consensus.
+"""
+
+import asyncio
+import os
+from agents import Agent, Runner
+
+
+# ---------------------------------------------------------------------------
+# Debaters (first N-1 agents) and Judge (last agent)
+# ---------------------------------------------------------------------------
+{% set debaters = system.agents[:-1] %}
+{% set judge = system.agents[-1] %}
+
+# Debate agents — each argues from their assigned perspective
+{% for agent in debaters %}
+{{ agent.name }}_agent = Agent(
+    name="{{ agent.name | replace('_', ' ') | title }}",
+    instructions="""{{ agent.instructions | trim }}""",
+)
+
+{% endfor %}
+# Judge agent — evaluates arguments and delivers verdict
+{{ judge.name }}_agent = Agent(
+    name="{{ judge.name | replace('_', ' ') | title }}",
+    instructions="""{{ judge.instructions | trim }}""",
+)
+
+
+async def main() -> None:
+    """Run the debate: all debaters argue in parallel, then judge decides."""
+    user_input = os.environ.get("USER_INPUT", "{{ system.example_input }}")
+    print(f"User: {user_input}\n")
+
+    # ---- Phase 1: All debaters present their positions ----
+    print("=" * 60)
+    print("  DEBATE ROUND — Positions")
+    print("=" * 60)
+
+    debaters_list = [
+        {% for agent in debaters %}
+        {{ agent.name }}_agent,
+        {% endfor %}
+    ]
+
+    debate_results = await asyncio.gather(*[
+        Runner.run(agent, user_input)
+        for agent in debaters_list
+    ])
+
+    for i, agent in enumerate(debaters_list):
+        print(f"\n--- {agent.name} ---")
+        print(debate_results[i].final_output)
+
+    # ---- Phase 2: Judge reviews and delivers verdict ----
+    print("\n" + "=" * 60)
+    print("  JUDGE'S REVIEW")
+    print("=" * 60)
+
+    positions_text = "\n\n".join(
+        f"=== {agent.name} ===\n{result.final_output}"
+        for agent, result in zip(debaters_list, debate_results)
+    )
+
+    judge_prompt = (
+        f"Original question/input: {user_input}\n\n"
+        f"Below are the positions presented by each debater:\n\n"
+        f"{positions_text}\n\n"
+        f"Review each position carefully. Evaluate the strength of arguments, "
+        f"evidence quality, logical consistency, and relevance to the original question. "
+        f"Then deliver your verdict: which position is strongest and why. "
+        f"If a consensus position emerges, synthesize it."
+    )
+
+    verdict = await Runner.run({{ judge.name }}_agent, judge_prompt)
+    print(f"\n{verdict.final_output}")
+
+    # Summary
+    print("\n" + "=" * 60)
+    print("  DEBATE SUMMARY")
+    print("=" * 60)
+    print(f"\nDebaters: {', '.join(a.name for a in debaters_list)}")
+    print(f"Judge: {{ judge.name | replace('_', ' ') | title }}")
+    print(f"Total positions considered: {len(debaters_list)}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

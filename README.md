@@ -5,11 +5,12 @@ Generate complete multi-agent AI systems from a single YAML batch specification.
 ## Features
 
 - **Two targets**: [OpenAI Agents SDK](https://github.com/openai/openai-agents-python) and [LangGraph](https://langchain-ai.github.io/langgraph/)
-- **Seven patterns**:
+- **Eight patterns**:
   - **Handoffs** — agents delegate tasks to each other
   - **Agents as Tools** — agents call other agents as sub-routines
   - **Chain** — linear pipeline where each agent passes output to the next
   - **Broadcast / Mesh** — fan-out: all agents analyze the same input in parallel, then results are merged
+  - **Debate / Consensus** — multiple agents argue from assigned positions, then a judge evaluates and selects the best argument
   - **Reflection** — generator + critic loop: output is iteratively refined until approved or max rounds reached
   - **Router Manager** — a router classifies input and dispatches to specialists
   - **Supervisor Workers** — a supervisor orchestrates workers via structured routing
@@ -23,7 +24,6 @@ Generate complete multi-agent AI systems from a single YAML batch specification.
 
 ```
 How should your agents coordinate?
-│
 ├── Sequential steps, each feeding into the next?
 │   └── Is the flow strictly linear (A → B → C)?
 │       └── → **Chain**
@@ -37,8 +37,10 @@ How should your agents coordinate?
 ├── All agents need to analyze the same input?
 │   ├── From different perspectives, independently?
 │   │   └── → **Broadcast / Mesh**
-│   └── Debating opposing positions toward consensus?
-│       └── (future) → **Debate / Consensus**
+│   └── Debating opposing positions toward consensus?│   └── → **Debate / Consensus**
+│
+├── Multiple agents argue opposing positions?
+│   └── → **Debate / Consensus** (arguments + judge verdict)
 │
 ├── Output needs iterative quality improvement?
 │   └── → **Reflection** (generator + critic loop)
@@ -54,7 +56,8 @@ How should your agents coordinate?
 
 | Pattern | Coordination | Best For | Agents | Loop? |
 |---------|-------------|----------|--------|-------|
-| **Chain** | Sequential pipeline | Data processing, content pipelines, staged analysis | N (general) | No |
+| **Chain** | Sequential pipeline | Data processing, content pipelines, staged analysis | N | No |
+| **Debate / Consensus** | Parallel positions, judge verdict | Policy analysis, legal reasoning, decision-making with trade-offs | 3+ (N-1 debaters + judge) | No |
 | **Router Manager** | Classification → dispatch | Support triage, content routing, intent-based dispatch | 3+ (router + specialists) | No |
 | **Supervisor Workers** | Dynamic routing with feedback | Research, task decomposition, multi-step reasoning | 3+ (supervisor + workers) | Yes (supervisor re-routes) |
 | **Broadcast / Mesh** | Parallel fan-out, fan-in | Market analysis, code audit, multi-perspective review | N (all parallel) | No |
@@ -64,9 +67,47 @@ How should your agents coordinate?
 
 ---
 
+### Debate / Consensus
+
+**When to use:** A decision involves trade-offs and you want multiple perspectives argued and evaluated. Different positions should be represented and a judge should weigh the evidence.
+
+**How it works:** The first N-1 agents each argue from their assigned position (pro, con, neutral, etc.) in parallel. The last agent acts as a judge — it reviews all arguments and delivers a verdict on which is strongest, or synthesizes a consensus.
+
+**Real-world analogy:** A courtroom trial: the prosecution and defense present their cases, then the judge delivers a verdict based on the strength of arguments.
+
+**Generated architecture (OpenAI):**
+```
+        ┌── debater[0] ──┐
+input ──── debater[1] ──── asyncio.gather() ──→ judge → verdict
+        └── debater[2] ──┘
+```
+All debaters receive the same input via `asyncio.gather()`. The judge receives all debate positions and produces a final verdict.
+
+**Generated architecture (LangGraph):**
+```
+        ┌── debater[0] ──┐
+START ──── debater[1] ──── judge ──→ END
+        └── debater[2] ──┘
+```
+Fan-out edges from `START` to every debater node (parallel execution). Fan-in edges from all debaters to the judge node.
+
+**Best for:**
+- Policy analysis and decision-making with trade-offs
+- Legal reasoning and case analysis
+- Any scenario where surfacing multiple sides of an issue adds value
+- Multi-perspective evaluation where one answer must be selected
+
+**Note:** Last agent in the spec must be the judge. The judge receives all debate arguments and selects the best.
+
+**Avoid when:** You want a simple composite view (use Broadcast instead), or when agents should converge iteratively (use Reflection).
+
+---
+
 ### Chain
 
 **When to use:** You have a fixed sequence of processing stages where each stage depends on the previous one. The flow is known at design time.
+
+**How it works:** A linear pipeline where each agent receives the previous agent's output as its input. The processing stages and their order are fixed at design time.
 
 **Real-world analogy:** An assembly line — each station adds value and passes the workpiece to the next.
 
@@ -94,6 +135,8 @@ A linear DAG where each node is a function that calls an LLM with the accumulate
 ### Router Manager
 
 **When to use:** Input can be classified into distinct categories, and each category has a dedicated specialist. The router decides once, then the specialist handles it.
+
+**How it works:** A router agent classifies the input and hands off to the matching specialist agent. The specialist handles the task independently, and control may return to the router for follow-up routing.
 
 **Real-world analogy:** A hospital triage nurse who directs patients to the right department.
 
@@ -126,6 +169,8 @@ The router chooses the next specialist via conditional edges. After a specialist
 
 **When to use:** Tasks need to be broken down dynamically, delegated to workers, and their results synthesized. The supervisor has a feedback loop.
 
+**How it works:** A supervisor agent dynamically decomposes tasks and routes them to worker agents. Workers return results to the supervisor, which decides the next step or finishes when the task is complete.
+
 **Real-world analogy:** A team lead who assigns tasks, reviews progress, and re-assigns as needed until the project is complete.
 
 **Generated architecture (OpenAI):**
@@ -157,6 +202,8 @@ The supervisor routes to a worker via conditional edges. Workers return to the s
 
 **When to use:** The same input should be analyzed from multiple independent perspectives simultaneously. Results are then merged for a composite view.
 
+**How it works:** The same input is sent to all agents in parallel. Each agent analyzes it independently from its assigned perspective. All responses are then collected and merged into a unified summary.
+
 **Real-world analogy:** A panel of experts each giving their independent opinion, then a moderator summarizing.
 
 **Generated architecture (OpenAI):**
@@ -187,6 +234,8 @@ Fan-out edges from `START` to every agent node (parallel execution). Fan-in edge
 ### Reflection
 
 **When to use:** Output quality matters enough to warrant iterative self-critique. A generator produces content, a critic reviews it, and the loop continues until quality standards are met.
+
+**How it works:** A generator agent produces an initial output, then a critic agent reviews it and provides feedback. If the critic approves (via an `APPROVED` keyword), the loop exits. Otherwise, the generator revises based on the critique and the cycle repeats up to `max_rounds`.
 
 **Real-world analogy:** A writer drafts, an editor marks up, the writer revises — repeat until the editor approves.
 
@@ -221,6 +270,8 @@ State tracks `round` and `approved` flags. A `router` function checks both condi
 
 **When to use:** Agents need to transfer control mid-conversation based on context. The user interacts with one agent at a time, but the conversation can move between agents seamlessly.
 
+**How it works:** A triage agent receives the input and transfers (hands off) the conversation to the most appropriate specialist agent. Only one agent is active at a time, and specialists can hand off back to triage for further routing.
+
 **Real-world analogy:** A receptionist who transfers your call to the right department, then the specialist takes over.
 
 **Generated architecture (OpenAI):**
@@ -251,6 +302,8 @@ The triage node routes to a specialist via conditional edges. Specialists return
 ### Agents as Tools
 
 **When to use:** One orchestrator agent should be able to call specialist agents as tools/functions. The orchestrator decides when and how to use each specialist.
+
+**How it works:** Specialist agents are wrapped as callable tools via `agent.as_tool()`. An orchestrator agent receives these tools and decides when to invoke each one based on the task at hand. The orchestrator retains full control over tool selection and ordering.
 
 **Real-world analogy:** A general contractor who hires electricians, plumbers, and carpenters as needed, deciding when to call each.
 
@@ -330,7 +383,7 @@ systems:
   - name: my-system
     description: "A short description"
     target: openai           # or langgraph
-    pattern: handoffs        # or agents_as_tools, broadcast, chain, reflection, router_manager, supervisor_workers
+    pattern: handoffs        # or agents_as_tools, broadcast, chain, debate, reflection, router_manager, supervisor_workers
     model: gpt-4o
     example_input: "What agents can you use?"
     agents:
@@ -354,6 +407,7 @@ gatekeeper-eos-v6/
 │   │   ├── agents_as_tools/
 │   │   ├── broadcast/
 │   │   ├── chain/
+│   │   ├── debate/
 │   │   ├── handoffs/
 │   │   ├── reflection/
 │   │   ├── router_manager/
@@ -362,6 +416,7 @@ gatekeeper-eos-v6/
 │       ├── agents_as_tools/
 │       ├── broadcast/
 │       ├── chain/
+│       ├── debate/
 │       ├── handoffs/
 │       ├── reflection/
 │       ├── router_manager/
