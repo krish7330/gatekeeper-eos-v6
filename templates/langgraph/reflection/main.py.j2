@@ -1,0 +1,150 @@
+"""
+{{ system.name }} - {{ system.description | trim }}
+Pattern: Reflection / Generate-Critic Loop (LangGraph)
+
+The generator produces output, the critic reviews it and suggests improvements,
+and the cycle repeats until the critic approves or the maximum round is reached.
+"""
+
+from typing import TypedDict, Annotated, Sequence, Literal
+from operator import add
+import os
+
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+
+MAX_ROUNDS = {{ system.get("max_rounds", 3) }}
+
+
+# ---------------------------------------------------------------------------
+# State
+# ---------------------------------------------------------------------------
+class AgentState(TypedDict):
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+    round: int
+    approved: bool
+
+
+# ---------------------------------------------------------------------------
+# Nodes
+# ---------------------------------------------------------------------------
+{% set generator = system.agents[0] %}
+{% set critic = system.agents[1] %}
+
+def {{ generator.name }}_node(state: AgentState) -> dict:
+    """Generate or revise output based on the current state."""
+    llm = ChatOpenAI(model="{{ system.model }}")
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """{{ generator.instructions | trim }}"""),
+        ("messages", "{messages}"),
+    ])
+    chain = prompt | llm
+    result = chain.invoke(state)
+    return {
+        "messages": [result],
+        "round": state.get("round", 0) + 1,
+    }
+
+
+def {{ critic.name }}_node(state: AgentState) -> dict:
+    """Review the latest output and decide if it's approved."""
+    llm = ChatOpenAI(model="{{ system.model }}")
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """{{ critic.instructions | trim }}
+
+After your review, if the output is satisfactory, end your response with
+the word 'APPROVED' on its own line. Otherwise, provide specific,
+actionable feedback for improvement."""),
+        ("messages", "{messages}"),
+    ])
+    chain = prompt | llm
+    result = chain.invoke(state)
+
+    # Check if the critic approved the output
+    approved = "APPROVED" in (result.content if hasattr(result, "content") else str(result))
+
+    return {
+        "messages": [result],
+        "approved": approved,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Routing logic
+# ---------------------------------------------------------------------------
+def router(state: AgentState) -> Literal["{{ generator.name }}", "__end__"]:
+    """Route back to generator for revision, or finish."""
+    if state.get("approved", False):
+        print(f"  ✓ Critic approved in round {state.get('round', 0)}")
+        return "__end__"
+    if state.get("round", 0) >= MAX_ROUNDS:
+        print(f"  → Max rounds ({MAX_ROUNDS}) reached")
+        return "__end__"
+    print(f"  → Round {state.get('round', 0)}/{MAX_ROUNDS}: revising...")
+    return "{{ generator.name }}"
+
+
+# ---------------------------------------------------------------------------
+# Graph construction
+# ---------------------------------------------------------------------------
+builder = StateGraph(AgentState)
+
+builder.add_node("{{ generator.name }}", {{ generator.name }}_node)
+builder.add_node("{{ critic.name }}", {{ critic.name }}_node)
+
+# START → generator
+builder.add_edge(START, "{{ generator.name }}")
+
+# generator → critic
+builder.add_edge("{{ generator.name }}", "{{ critic.name }}")
+
+# critic → generator (conditional, loops back) or → END
+builder.add_conditional_edges(
+    "{{ critic.name }}",
+    router,
+)
+
+graph = builder.compile()
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def main() -> None:
+    user_input = os.environ.get("USER_INPUT", "{{ system.example_input }}")
+    print(f"User: {user_input}\n")
+    print("=" * 60)
+    print("  REFLECTION LOOP")
+    print("=" * 60)
+
+    result = graph.invoke({
+        "messages": [HumanMessage(content=user_input)],
+        "round": 0,
+        "approved": False,
+    })
+
+    # Print the generator's final output (second-to-last AI message)
+    # The last AI message is always the critic's approval/feedback
+    ai_messages = [
+        msg for msg in result["messages"]
+        if hasattr(msg, "content") and msg.content and msg.type == "ai"
+    ]
+    if len(ai_messages) >= 2:
+        final_output = ai_messages[-2].content  # Generator's final message
+    elif ai_messages:
+        final_output = ai_messages[-1].content  # Fallback to only AI message
+    else:
+        final_output = "(No output generated)"
+
+    print(f"\n{'=' * 60}")
+    print("  FINAL OUTPUT")
+    print('-' * 60)
+    print(f"\n{final_output}")
+    print(f"\n  (Rounds: {result.get('round', 0)}/{MAX_ROUNDS})")
+
+
+if __name__ == "__main__":
+    main()

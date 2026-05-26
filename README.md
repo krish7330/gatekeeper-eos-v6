@@ -5,11 +5,12 @@ Generate complete multi-agent AI systems from a single YAML batch specification.
 ## Features
 
 - **Two targets**: [OpenAI Agents SDK](https://github.com/openai/openai-agents-python) and [LangGraph](https://langchain-ai.github.io/langgraph/)
-- **Six patterns**:
+- **Seven patterns**:
   - **Handoffs** — agents delegate tasks to each other
   - **Agents as Tools** — agents call other agents as sub-routines
   - **Chain** — linear pipeline where each agent passes output to the next
   - **Broadcast / Mesh** — fan-out: all agents analyze the same input in parallel, then results are merged
+  - **Reflection** — generator + critic loop: output is iteratively refined until approved or max rounds reached
   - **Router Manager** — a router classifies input and dispatches to specialists
   - **Supervisor Workers** — a supervisor orchestrates workers via structured routing
 - **Template-based** — all generated code uses Jinja2 templates for easy customization
@@ -69,7 +70,7 @@ systems:
   - name: my-system
     description: "A short description"
     target: openai           # or langgraph
-    pattern: handoffs        # or agents_as_tools, broadcast, chain, router_manager, supervisor_workers
+    pattern: handoffs        # or agents_as_tools, broadcast, chain, reflection, router_manager, supervisor_workers
     model: gpt-4o
     example_input: "What agents can you use?"
     agents:
@@ -94,6 +95,7 @@ gatekeeper-eos-v6/
 │   │   ├── broadcast/
 │   │   ├── chain/
 │   │   ├── handoffs/
+│   │   ├── reflection/
 │   │   ├── router_manager/
 │   │   └── supervisor_workers/
 │   └── langgraph/          # LangGraph templates
@@ -101,6 +103,7 @@ gatekeeper-eos-v6/
 │       ├── broadcast/
 │       ├── chain/
 │       ├── handoffs/
+│       ├── reflection/
 │       ├── router_manager/
 │       └── supervisor_workers/
 ├── generated/              # Output directory

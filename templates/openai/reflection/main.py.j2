@@ -1,0 +1,103 @@
+"""
+{{ system.name }} - {{ system.description | trim }}
+Pattern: Reflection / Generate-Critic Loop (OpenAI Agents SDK)
+
+The generator produces output, the critic reviews it and suggests improvements,
+and the cycle repeats until the critic approves or the maximum round is reached.
+"""
+
+import asyncio
+import os
+from agents import Agent, Runner
+
+
+MAX_ROUNDS = {{ system.get("max_rounds", 3) }}
+
+
+# ---------------------------------------------------------------------------
+# Agents
+# ---------------------------------------------------------------------------
+{% for agent in system.agents %}
+{{ agent.name }}_agent = Agent(
+    name="{{ agent.name | replace('_', ' ') | title }}",
+    instructions="""{{ agent.instructions | trim }}""",
+)
+
+{% endfor %}
+
+
+async def main() -> None:
+    """Run the reflection loop: generate → critique → revise → ..."""
+    user_input = os.environ.get("USER_INPUT", "{{ system.example_input }}")
+    print(f"User: {user_input}\n")
+    print("=" * 60)
+
+{% if system.agents | length >= 2 %}
+    {% set generator = system.agents[0] %}
+    {% set critic = system.agents[1] %}
+
+    # Initial generation
+    completed_rounds = 1
+    print("  ROUND 1 — Generation")
+    print("-" * 60)
+    result = await Runner.run({{ generator.name }}_agent, user_input)
+    current_output = result.final_output
+    print(f"\n{current_output}\n")
+
+    # Reflection loop
+    for round_num in range(2, MAX_ROUNDS + 1):
+        completed_rounds = round_num
+        print("=" * 60)
+        print(f"  ROUND {round_num} — Critique & Revision")
+        print("-" * 60)
+
+        # Critic reviews the current output
+        critique_input = (
+            f"Original request: {user_input}\n\n"
+            f"Current output:\n{current_output}\n\n"
+            f"Review the output above. If it is satisfactory, respond with "
+            f"exactly 'APPROVED' followed by a brief note. "
+            f"Otherwise, provide specific, actionable feedback for improvement."
+        )
+        critique_result = await Runner.run({{ critic.name }}_agent, critique_input)
+        critique = critique_result.final_output
+
+        if critique.strip().startswith("APPROVED"):
+            print(f"\n✓ Critic approved the output.\n")
+            print(f"   Feedback: {critique.replace('APPROVED', '').strip()}")
+            break
+
+        print(f"\n  Critic feedback:\n{critique}\n")
+
+        # Generator revises based on critique
+        revision_input = (
+            f"Original request: {user_input}\n\n"
+            f"Your previous output:\n{current_output}\n\n"
+            f"Feedback to address:\n{critique}\n\n"
+            f"Please revise your output based on the feedback above."
+        )
+        revision_result = await Runner.run({{ generator.name }}_agent, revision_input)
+        current_output = revision_result.final_output
+        print(f"  Revised output:\n{current_output}\n")
+
+    else:
+        # Loop completed without approval — last round is the final answer
+        completed_rounds = MAX_ROUNDS
+        print("=" * 60)
+        print(f"  FINAL — Max rounds ({MAX_ROUNDS}) reached")
+
+    print("=" * 60)
+    print("\n  FINAL OUTPUT")
+    print("-" * 60)
+    print(f"\n{current_output}")
+    print(f"\n  (Completed in {completed_rounds} round{'s' if completed_rounds != 1 else ''})")
+
+{% else %}
+    # Single agent fallback — no reflection loop
+    result = await Runner.run({{ system.agents[0].name }}_agent, user_input)
+    print(f"\n{result.final_output}")
+{% endif %}
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
