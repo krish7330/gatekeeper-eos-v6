@@ -41,17 +41,18 @@ pip install -e ".[dev]"
 ### Verify your setup
 
 ```bash
-# Run the tests (should all pass — parameterized across all patterns × targets)
+# Run the tests
 python -m pytest tests/ -v --tb=short
 
 # Generate all 12 example systems
-python factory.py specs/batch.yaml
+factory specs/batch.yaml
+# or: python -m gatekeeper_eos_v6 specs/batch.yaml
 
 # Preview mode — no files written
-python factory.py specs/batch.yaml --preview
+factory specs/batch.yaml --preview
 
 # List available targets and patterns
-python factory.py specs/batch.yaml --list-patterns
+factory specs/batch.yaml --list-patterns
 ```
 
 ---
@@ -61,7 +62,7 @@ python factory.py specs/batch.yaml --list-patterns
 1. **Create a feature branch:** `git checkout -b feat/my-new-pattern`
 2. **Make your changes** — see guides below
 3. **Run tests:** `python -m pytest tests/ -v --tb=short`
-4. **Generate all systems:** `python factory.py specs/batch.yaml` (validates templates render without errors)
+4. **Generate all systems:** `factory specs/batch.yaml` (validates templates render without errors)
 5. **Run the full CI suite locally:** see [CI / CD](#ci--cd)
 6. **Commit and push:** follow the [commit style](#commit-messages) below
 7. **Open a pull request**
@@ -72,28 +73,35 @@ python factory.py specs/batch.yaml --list-patterns
 
 ```
 gatekeeper-eos-v6/
-├── factory.py              # CLI + spec parsing + code generation
+├── src/
+│   └── gatekeeper_eos_v6/
+│       ├── __init__.py         # Package init
+│       ├── __main__.py         # python -m gatekeeper_eos_v6 entry point
+│       └── factory.py          # CLI + spec parsing + code generation
 ├── specs/
-│   └── batch.yaml          # Batch spec defining all example systems
-├── templates/              # Jinja2 templates — one folder per (target, pattern)
-│   ├── openai/             # OpenAI Agents SDK target
+│   └── batch.yaml              # Batch spec defining all example systems
+├── templates/                  # Jinja2 templates — one folder per (target, pattern)
+│   ├── openai/                 # OpenAI Agents SDK target
 │   │   ├── handoffs/
 │   │   │   ├── main.py.j2
 │   │   │   └── requirements.txt.j2
-│   │   └── ...             # 7 more patterns
-│   └── langgraph/          # LangGraph target
-│       └── ...             # Mirror of the same patterns
-├── generated/              # Output directory (gitignored)
-└── tests/
-    ├── test_spec_parsing.py   # Spec validation tests
-    └── test_generation.py     # Template rendering + file output tests
+│   │   └── ...                 # 7 more patterns
+│   └── langgraph/              # LangGraph target
+│       └── ...                 # Mirror of the same patterns
+├── generated/                  # Output directory (gitignored)
+├── tests/
+│   ├── test_spec_parsing.py    # Spec validation tests
+│   └── test_generation.py      # Template rendering + file output tests
+├── README.md
+├── CONTRIBUTING.md
+└── pyproject.toml
 ```
 
 ### Key Files
 
 | File | Purpose |
 |------|---------|
-| `factory.py` | CLI entry point — parses args, loads YAML, validates, renders Jinja2 templates, writes output. All orchestration logic lives here. |
+| `src/gatekeeper_eos_v6/factory.py` | CLI entry point — parses args, loads YAML, validates, renders Jinja2 templates, writes output. All orchestration logic lives here. |
 | `templates/{target}/{pattern}/main.py.j2` | Jinja2 template for the system's `main.py`. Receives the `system` dict as template context. |
 | `templates/{target}/{pattern}/requirements.txt.j2` | Jinja2 template for `requirements.txt`. |
 | `specs/batch.yaml` | The source of truth for all example systems. Every pattern should have at least one entry here. |
@@ -142,7 +150,7 @@ openai-agents>=0.0.6
 
 ### Step 2: Register the pattern
 
-In `factory.py`, add the new pattern to `SUPPORTED_PATTERNS`:
+In `src/gatekeeper_eos_v6/factory.py`, add the new pattern to `SUPPORTED_PATTERNS`:
 
 ```python
 SUPPORTED_PATTERNS = {
@@ -181,7 +189,7 @@ Add at least one system to `specs/batch.yaml` to exercise the new pattern:
 python -m pytest tests/ -v --tb=short
 
 # Generate all systems (including your new one)
-python factory.py specs/batch.yaml
+factory specs/batch.yaml
 
 # Check the generated output
 cat generated/<your-system-name>/main.py
@@ -237,7 +245,7 @@ Adding a new target (e.g., Amazon Bedrock, CrewAI, Autogen) requires more work t
 
    ```bash
    python -m pytest tests/ -v --tb=short
-   python factory.py specs/batch.yaml
+   factory specs/batch.yaml
    ```
 
 ### Design Guidelines for a New Target
@@ -383,7 +391,7 @@ Similarly, tests parameterize over `SUPPORTED_TARGETS`. Ensure:
 1. **Create a feature branch** from `master`
 2. **Make your changes** — include tests and documentation updates
 3. **Run the full test suite** — `python -m pytest tests/ -v --tb=short`
-4. **Generate all systems** — `python factory.py specs/batch.yaml` (validates all templates)
+4. **Generate all systems** — `factory specs/batch.yaml` (validates all templates)
 5. **Update the README** if your change affects:
    - The list of patterns or targets
    - The Pattern Gallery or Architecture Comparison section
@@ -395,7 +403,7 @@ Similarly, tests parameterize over `SUPPORTED_TARGETS`. Ensure:
 ### PR Checklist
 
 - [ ] Tests pass locally (`pytest tests/ -v --tb=short`)
-- [ ] All systems generate (`python factory.py specs/batch.yaml`)
+- [ ] All systems generate (`factory specs/batch.yaml`)
 - [ ] CI passes on GitHub
 - [ ] README updated if patterns/targets changed
 - [ ] At least one spec entry added for new patterns
@@ -415,7 +423,7 @@ On every push/PR to `master`, the CI pipeline:
 1. **Sets up Python** (3.11, 3.12, 3.13 matrix)
 2. **Installs dependencies** via `pip install -e ".[dev]"`
 3. **Runs tests** — `pytest tests/ -v --tb=short`
-4. **Generates all systems** — `python factory.py specs/batch.yaml`
+4. **Generates all systems** — `factory specs/batch.yaml`
 5. **Validates Python syntax** of all generated `main.py` files
 6. **Runs preview mode** (both normal and verbose)
 7. **Verifies `.gitignore`** includes `generated/`
@@ -428,9 +436,9 @@ pip install -e ".[dev]"
 
 # Run the same steps CI runs
 python -m pytest tests/ -v --tb=short
-python factory.py specs/batch.yaml
-python factory.py specs/batch.yaml --preview
-python factory.py specs/batch.yaml --preview --verbose
+factory specs/batch.yaml
+factory specs/batch.yaml --preview
+factory specs/batch.yaml --preview --verbose
 
 # Validate generated syntax
 python -c "

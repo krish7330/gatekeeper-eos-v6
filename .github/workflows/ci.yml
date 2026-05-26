@@ -34,7 +34,7 @@ jobs:
 
       - name: Generate all systems from batch spec
         run: |
-          python factory.py specs/batch.yaml
+          python -m gatekeeper_eos_v6 specs/batch.yaml
 
       - name: Validate generated Python syntax
         run: |
@@ -57,11 +57,11 @@ jobs:
 
       - name: Run preview mode (no file writes)
         run: |
-          python factory.py specs/batch.yaml --preview
+          python -m gatekeeper_eos_v6 specs/batch.yaml --preview
 
       - name: Run verbose preview mode
         run: |
-          python factory.py specs/batch.yaml --preview --verbose
+          python -m gatekeeper_eos_v6 specs/batch.yaml --preview --verbose
 
       - name: Verify generated/ is in .gitignore
         run: |

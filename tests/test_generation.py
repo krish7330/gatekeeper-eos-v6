@@ -1,16 +1,11 @@
 """Tests for system file generation."""
 
-import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 
-# Add project root to sys.path so we can import factory
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-
-from factory import (
+from gatekeeper_eos_v6.factory import (
     generate_system,
     generate_all,
     _generate_readme,
@@ -18,6 +13,8 @@ from factory import (
     SUPPORTED_TARGETS,
     SUPPORTED_PATTERNS,
 )
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -100,7 +97,7 @@ def test_generate_system_creates_files(tmp_path, target, pattern):
     from unittest.mock import patch
 
     # Temporarily override GENERATED_DIR in the factory module
-    with patch("factory.GENERATED_DIR", tmp_path):
+    with patch("gatekeeper_eos_v6.factory.GENERATED_DIR", tmp_path):
         env = _load_templates()
         system = make_system(target, pattern)
         out_dir = generate_system(system, env)
@@ -124,7 +121,7 @@ def test_generated_main_includes_agents(tmp_path, target, pattern):
     """Generated main.py should reference each agent name from the spec."""
     from unittest.mock import patch
 
-    with patch("factory.GENERATED_DIR", tmp_path):
+    with patch("gatekeeper_eos_v6.factory.GENERATED_DIR", tmp_path):
         env = _load_templates()
         system = make_system(target, pattern)
         out_dir = generate_system(system, env)
@@ -151,7 +148,7 @@ def test_generate_all_processes_all_systems(tmp_path):
         ]
     }
 
-    with patch("factory.GENERATED_DIR", tmp_path):
+    with patch("gatekeeper_eos_v6.factory.GENERATED_DIR", tmp_path):
         env = _load_templates()
         paths = generate_all(spec, env)
 
@@ -166,7 +163,7 @@ def test_generate_all_processes_all_systems(tmp_path):
 @pytest.mark.parametrize("target", sorted(SUPPORTED_TARGETS))
 def test_preview_verbose_shows_line_counts(tmp_path, target, capsys):
     """--preview --verbose should show line counts and sizes without writing files."""
-    from factory import main
+    from gatekeeper_eos_v6.factory import main
 
     spec_content = f"""
 systems:
@@ -201,7 +198,7 @@ systems:
 @pytest.mark.parametrize("target", sorted(SUPPORTED_TARGETS))
 def test_preview_mode_does_not_write_files(tmp_path, target):
     """--preview flag should print file tree without writing anything to disk."""
-    from factory import main
+    from gatekeeper_eos_v6.factory import main
 
     # Create a temporary spec file
     spec_content = f"""
@@ -236,7 +233,7 @@ def test_generated_files_have_consistent_python_syntax(tmp_path):
 
     for target in SUPPORTED_TARGETS:
         for pattern in SUPPORTED_PATTERNS:
-            with patch("factory.GENERATED_DIR", tmp_path):
+            with patch("gatekeeper_eos_v6.factory.GENERATED_DIR", tmp_path):
                 env = _load_templates()
                 system = make_system(target, pattern, f"{target}-{pattern}")
                 out_dir = generate_system(system, env)

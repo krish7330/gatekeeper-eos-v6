@@ -431,20 +431,23 @@ The supervisor uses conditional edges to route to a specialist, then the special
 
 ```bash
 # Install dependencies
-pip install pyyaml jinja2 pytest
+pip install -e ".[dev]"
 
 # Generate all systems from the example batch spec
-python factory.py specs/batch.yaml
+factory specs/batch.yaml
 
 # Or generate into a custom directory
-python factory.py specs/batch.yaml -o my_output
+factory specs/batch.yaml -o my_output
+
+# Or use python -m
+python -m gatekeeper_eos_v6 specs/batch.yaml
 ```
 
 ## Usage
 
 ```
-usage: factory.py [-h] [--output OUTPUT] [--list-patterns] [--preview]
-                  [--verbose] spec
+usage: factory [-h] [--output OUTPUT] [--list-patterns] [--preview]
+               [--verbose] spec
 
 Generate multi-agent AI systems from YAML specs.
 
@@ -464,20 +467,20 @@ optional arguments:
 
 ```bash
 # Preview the output structure without writing anything
-python factory.py specs/batch.yaml --preview
+factory specs/batch.yaml --preview
 
 # Preview with detailed file stats (lines, bytes per file)
-python factory.py specs/batch.yaml --preview --verbose
+factory specs/batch.yaml --preview --verbose
 
 # Generate all systems
-python factory.py specs/batch.yaml
+factory specs/batch.yaml
 ```
 
 ## End-to-End Tutorial
 
 This tutorial walks through the full lifecycle of Agent Factory — from generating your first system to creating custom specs and adding new patterns.
 
-> **Prerequisites:** Python 3.10+, `pip install pyyaml jinja2`
+> **Prerequisites:** Python 3.11+, `pip install -e ".[dev]"`
 
 ---
 
@@ -487,7 +490,8 @@ Let's start by previewing what will be generated, then generating everything.
 
 ```bash
 # Step 1 — Preview the full output structure (no files written)
-python factory.py specs/batch.yaml --preview
+factory specs/batch.yaml --preview
+# or: python -m gatekeeper_eos_v6 specs/batch.yaml --preview
 ```
 
 This shows a file tree for each of the 12 systems without writing anything. You'll see each system's pattern, target, and agent count:
@@ -508,7 +512,8 @@ Previewing 12 system(s) in ./generated/ …
 
 ```bash
 # Step 2 — Generate all 12 systems
-python factory.py specs/batch.yaml
+factory specs/batch.yaml
+# or: python -m gatekeeper_eos_v6 specs/batch.yaml
 ```
 
 Expected output:
@@ -641,7 +646,8 @@ systems:
 Now generate it:
 
 ```bash
-python factory.py specs/social-media.yaml
+factory specs/social-media.yaml
+# or: python -m gatekeeper_eos_v6 specs/social-media.yaml
 ```
 
 You'll get a new system at `generated/social-media-campaign/`.
@@ -773,7 +779,7 @@ openai-agents>=0.0.6
 
 #### 2. Register the pattern in factory.py
 
-Edit `factory.py` and add `"summarizer"` to `SUPPORTED_PATTERNS`:
+Edit `src/gatekeeper_eos_v6/factory.py` and add `"summarizer"` to `SUPPORTED_PATTERNS`:
 
 ```python
 SUPPORTED_PATTERNS = {"handoffs", "agents_as_tools", "router_manager",
@@ -804,7 +810,7 @@ systems:
 ```
 
 ```bash
-python factory.py specs/summarizer.yaml
+factory specs/summarizer.yaml
 ls generated/document-summarizer/
 # → README.md  AGENTS.md  main.py  requirements.txt  system.yaml
 
@@ -830,11 +836,11 @@ With LangGraph, the summarizer pattern would use a minimal `StateGraph` — one 
 
 | Concept | You did it |
 |---------|-----------|
-| Preview & generate | `factory.py specs/batch.yaml --preview` then generate |
+| Preview & generate | `factory specs/batch.yaml --preview` then `factory specs/batch.yaml` |
 | Understand output | Explored 5 files per system |
 | Create a custom spec | Wrote `specs/social-media.yaml` with Broadcast pattern |
 | Run a generated system | Executed `main.py` with `OPENAI_API_KEY` |
-| Add a new pattern | Created `summarizer` templates + registered in `factory.py` |
+| Add a new pattern | Created `summarizer` templates + registered in `src/gatekeeper_eos_v6/factory.py` |
 
 Next steps: browse the [Pattern Gallery](#pattern-gallery--when-to-use-each-pattern) to choose the right pattern for your use case, or dive into the [templates/](templates/) directory to see how existing patterns are implemented.
 
@@ -859,13 +865,15 @@ systems:
 
 ```
 gatekeeper-eos-v6/
-├── factory.py              # CLI orchestrator
-├── README.md               # This file
-├── AGENTS.md               # Agent patterns reference
+├── src/
+│   └── gatekeeper_eos_v6/
+│       ├── __init__.py         # Package init
+│       ├── __main__.py         # python -m gatekeeper_eos_v6 entry point
+│       └── factory.py          # CLI orchestrator
 ├── specs/
-│   └── batch.yaml          # Example batch spec
+│   └── batch.yaml              # Example batch spec
 ├── templates/
-│   ├── openai/             # OpenAI Agents SDK templates
+│   ├── openai/                 # OpenAI Agents SDK templates
 │   │   ├── agents_as_tools/
 │   │   ├── broadcast/
 │   │   ├── chain/
@@ -874,7 +882,7 @@ gatekeeper-eos-v6/
 │   │   ├── reflection/
 │   │   ├── router_manager/
 │   │   └── supervisor_workers/
-│   └── langgraph/          # LangGraph templates
+│   └── langgraph/              # LangGraph templates
 │       ├── agents_as_tools/
 │       ├── broadcast/
 │       ├── chain/
@@ -883,10 +891,13 @@ gatekeeper-eos-v6/
 │       ├── reflection/
 │       ├── router_manager/
 │       └── supervisor_workers/
-├── generated/              # Output directory
-└── tests/
-    ├── test_spec_parsing.py
-    └── test_generation.py
+├── generated/                  # Output directory (gitignored)
+├── tests/
+│   ├── test_spec_parsing.py
+│   └── test_generation.py
+├── README.md
+├── CONTRIBUTING.md
+└── pyproject.toml
 ```
 
 ## Testing
@@ -899,5 +910,5 @@ pytest tests/ -v
 
 1. Create `templates/<target>/<new_pattern>/main.py.j2`
 2. Create `templates/<target>/<new_pattern>/requirements.txt.j2`
-3. Add the pattern name to `SUPPORTED_PATTERNS` in `factory.py`
+3. Add the pattern name to `SUPPORTED_PATTERNS` in `src/gatekeeper_eos_v6/factory.py`
 4. Done — no other code changes needed.

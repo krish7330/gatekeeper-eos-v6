@@ -12,13 +12,16 @@ dependencies = [
     "jinja2>=3.0",
 ]
 
+[project.scripts]
+factory = "gatekeeper_eos_v6.factory:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
 ]
 
 [tool.setuptools.packages.find]
-exclude = ["specs", "generated", "templates"]
+where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

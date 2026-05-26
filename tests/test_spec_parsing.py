@@ -1,16 +1,11 @@
 """Tests for spec parsing and validation logic."""
 
-import sys
 from pathlib import Path
 
 import pytest
 import yaml
 
-# Add project root to sys.path so we can import factory
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-
-from factory import load_spec, validate_spec, SUPPORTED_TARGETS, SUPPORTED_PATTERNS
+from gatekeeper_eos_v6.factory import load_spec, validate_spec, SUPPORTED_TARGETS, SUPPORTED_PATTERNS
 
 
 # ---------------------------------------------------------------------------

@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""
-Agent Factory — Generate multi-agent AI systems from a YAML batch spec.
+"""Agent Factory — Generate multi-agent AI systems from a YAML batch spec.
 
 Usage:
-    python factory.py specs/batch.yaml
+    factory specs/batch.yaml
+    python -m gatekeeper_eos_v6 specs/batch.yaml
 
-Supports two output targets (OpenAI Agents SDK, LangGraph) and four
-orchestration patterns (handoffs, agents-as-tools, router-manager,
-supervisor-workers).  Each system is rendered from Jinja2 templates and
-placed in its own folder under generated/.
+Supports two output targets (OpenAI Agents SDK, LangGraph) and eight
+orchestration patterns (handoffs, agents_as_tools, router_manager,
+supervisor_workers, chain, broadcast, reflection, debate).  Each system
+is rendered from Jinja2 templates and placed in its own folder under
+generated/.
 """
 
 from __future__ import annotations
@@ -23,7 +24,9 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-HERE = Path(__file__).parent.resolve()
+# factory.py lives at src/gatekeeper_eos_v6/factory.py
+# Project root is three levels up
+HERE = Path(__file__).resolve().parent.parent.parent
 TEMPLATES_DIR = HERE / "templates"
 GENERATED_DIR = HERE / "generated"
 
