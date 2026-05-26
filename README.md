@@ -1,5 +1,10 @@
 # Agent Factory — `gatekeeper-eos-v6`
 
+[![CI](https://github.com/krishanumala/gatekeeper-eos-v6/actions/workflows/ci.yml/badge.svg)](https://github.com/krishanumala/gatekeeper-eos-v6/actions/workflows/ci.yml)
+[![Release](https://github.com/krishanumala/gatekeeper-eos-v6/actions/workflows/release.yml/badge.svg)](https://github.com/krishanumala/gatekeeper-eos-v6/actions/workflows/release.yml)
+[![Python Versions](https://img.shields.io/badge/python-3.11%20|%203.12%20|%203.13-blue)](https://github.com/krishanumala/gatekeeper-eos-v6)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 Generate complete multi-agent AI systems from a single YAML batch specification.
 
 ## Features
@@ -39,8 +44,8 @@ How should your agents coordinate?
 ├── All agents need to analyze the same input?
 │   ├── From different perspectives, independently?
 │   │   └── → **Broadcast / Mesh**
-│   ├── Debating opposing positions toward consensus?
-│   │   └── → **Debate / Consensus**
+│   ├── Debating opposing positions with a judge verdict?
+│   │   └── → **Debate**
 │   └── Independently, then finding agreement/disagreement?
 │       └── → **Consensus**
 │
@@ -62,7 +67,7 @@ How should your agents coordinate?
 | Pattern | Coordination | Best For | Agents | Loop? |
 |---------|-------------|----------|--------|-------|
 | **Chain** | Sequential pipeline | Data processing, content pipelines, staged analysis | N | No |
-| **Debate / Consensus** | Parallel positions, judge verdict | Policy analysis, legal reasoning, decision-making with trade-offs | 3+ (N-1 debaters + judge) | No |
+| **Debate** | Parallel positions, judge verdict | Policy analysis, legal reasoning, decision-making with trade-offs | 3+ (N-1 debaters + judge) | No |
 | **Router Manager** | Classification → dispatch | Support triage, content routing, intent-based dispatch | 3+ (router + specialists) | No |
 | **Supervisor Workers** | Dynamic routing with feedback | Research, task decomposition, multi-step reasoning | 3+ (supervisor + workers) | Yes (supervisor re-routes) |
 | **Consensus** | Independent analysis → synthesis | Risk assessment, multi-perspective review, finding agreement | 3+ (N-1 analysts + synthesizer) | No |
@@ -182,11 +187,11 @@ How should your agents coordinate?
 
 ---
 
-### Debate / Consensus
+### Debate
 
-**When to use:** A decision involves trade-offs and you want multiple perspectives argued and evaluated. Different positions should be represented and a judge should weigh the evidence.
+**When to use:** A decision involves trade-offs and you want multiple perspectives argued and evaluated by a judge. Different positions should be represented and a judge should weigh the evidence.
 
-**How it works:** The first N-1 agents each argue from their assigned position (pro, con, neutral, etc.) in parallel. The last agent acts as a judge — it reviews all arguments and delivers a verdict on which is strongest, or synthesizes a consensus.
+**How it works:** The first N-1 agents each argue from their assigned position (pro, con, neutral, etc.) in parallel. The last agent acts as a judge — it reviews all arguments and delivers a verdict on which is strongest.
 
 **Real-world analogy:** A courtroom trial: the prosecution and defense present their cases, then the judge delivers a verdict based on the strength of arguments.
 
@@ -215,6 +220,74 @@ Fan-out edges from `START` to every debater node (parallel execution). Fan-in ed
 **Note:** Last agent in the spec must be the judge. The judge receives all debate arguments and selects the best.
 
 **Avoid when:** You want a simple composite view (use Broadcast instead), or when agents should converge iteratively (use Reflection).
+
+---
+
+### Consensus
+
+**When to use:** Multiple independent perspectives should be analyzed in parallel, then synthesized to identify areas of agreement and disagreement. Unlike debate, consensus agents do not argue opposing positions — each contributes their own analysis.
+
+**How it works:** The first N-1 agents each analyze the input independently from their assigned domain or perspective. The last agent acts as a synthesizer — it reviews all analyses and produces a unified report that highlights areas of consensus, disagreements, and prioritized recommendations.
+
+**Real-world analogy:** A board meeting where each department head presents their independent assessment, then the CEO synthesizes a unified strategy.
+
+**Generated architecture (OpenAI):**
+```
+        ┌── analyst[0] ──┐
+input ──── analyst[1] ──── asyncio.gather() ──→ synthesizer → report
+        └── analyst[2] ──┘
+```
+All analysts receive the same input via `asyncio.gather()`. The synthesizer receives all analyses and produces a unified consensus report.
+
+**Generated architecture (LangGraph):**
+```
+        ┌── analyst[0] ──┐
+START ──── analyst[1] ──── synthesizer ──→ END
+        └── analyst[2] ──┘
+```
+Fan-out edges from `START` to every analyst node (parallel execution). Fan-in edges from all analysts to the synthesizer node.
+
+**Best for:**
+- Risk assessment from multiple domain perspectives (financial, technical, operational, compliance)
+- Multi-perspective review where synthesis matters more than opposition
+- Security threat modeling across different attack surfaces
+- Any scenario where independent expert opinions should be combined into a unified view
+
+**Note:** Last agent in the spec must be the synthesizer. It receives all analyses and identifies both agreement and disagreement.
+
+**Avoid when:** You want agents to argue opposing positions and select a winner (use Debate), or when a simple merged view is sufficient (use Broadcast).
+
+---
+
+### Planner-Executor
+
+**When to use:** A task requires planning before execution, with multiple steps that should be executed sequentially and independently verified. The plan is created upfront, then executed step by step.
+
+**How it works:** The first agent acts as a planner — it decomposes the input into a step-by-step plan. The next N-2 agents are executors that work through the plan sequentially, each building on the previous executor's output. The last agent acts as a verifier that checks the final output against the original requirements.
+
+**Real-world analogy:** A construction project: an architect creates blueprints (plan), contractors build each phase in sequence (execute), and an inspector verifies the final result (verify).
+
+**Generated architecture (OpenAI):**
+```
+input → planner → executor[0] → ... → executor[N-1] → verifier → output
+```
+Each phase runs sequentially. The planner produces a plan, executors work through it building context, and the verifier provides a final quality check.
+
+**Generated architecture (LangGraph):**
+```
+START → planner → executor[0] → ... → executor[N-1] → verifier → END
+```
+A linear DAG where state tracks both `messages` and a `plan` field passed through the chain.
+
+**Best for:**
+- Feature planning and implementation (plan tasks → implement → verify)
+- Document processing pipelines (plan extraction → analyze → format → verify)
+- Complex workflows that benefit from upfront planning before execution
+- Tasks requiring independent quality verification at the end
+
+**Note:** The first agent in the spec must be the planner, the last must be the verifier, and agents in between are executors. With only 2 agents (planner + verifier), the planner also executes the work.
+
+**Avoid when:** The execution path is dynamic and needs real-time re-routing (use Supervisor Workers), or when tasks are fully independent and can run in parallel (use Broadcast).
 
 ---
 
@@ -926,6 +999,9 @@ gatekeeper-eos-v6/
 
 ```bash
 pytest tests/ -v
+
+# With coverage:
+pytest tests/ -v --cov=gatekeeper_eos_v6 --cov-report=term-missing
 ```
 
 ## Adding a New Pattern
