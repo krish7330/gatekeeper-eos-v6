@@ -129,8 +129,9 @@ How should your agents coordinate?
 **Ask these questions in order to narrow your choice:**
 
 1. **Do agents need to see each other's outputs?**
-   - No → **Broadcast** (independent) or **Debate** (opposing positions)
+   - No → **Broadcast** (independent), **Debate** (opposing positions), or **Consensus** (independent + synthesis)
    - Yes → Chain, Reflection, or Supervisor Workers
+   - Yes, but phases are structured → **Planner-Executor** (plan → sequential execute → verify)
 
 2. **Is the execution path known at design time?**
    - Yes, fixed → **Chain**
