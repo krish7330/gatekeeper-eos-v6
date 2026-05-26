@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run tests
+        run: |
+          python -m pytest tests/ -v --tb=short
+
+      - name: Generate all systems from batch spec
+        run: |
+          python factory.py specs/batch.yaml
+
+      - name: Validate generated Python syntax
+        run: |
+          python -c "
+          import ast
+          from pathlib import Path
+          ok = True
+          for f in sorted(Path('generated').glob('*/main.py')):
+              code = f.read_text()
+              try:
+                  ast.parse(code)
+                  print(f'  OK {f.parent.name}/main.py ({len(code.splitlines())} lines)')
+              except SyntaxError as e:
+                  print(f'  FAIL {f.parent.name}/main.py: {e}')
+                  ok = False
+          print()
+          assert ok, 'Syntax errors found in generated files!'
+          print('All generated files have valid Python syntax.')
+          "
+
+      - name: Run preview mode (no file writes)
+        run: |
+          python factory.py specs/batch.yaml --preview
+
+      - name: Run verbose preview mode
+        run: |
+          python factory.py specs/batch.yaml --preview --verbose
+
+      - name: Verify generated/ is in .gitignore
+        run: |
+          python -c "
+          from pathlib import Path
+          gitignore = Path('.gitignore').read_text()
+          assert 'generated/' in gitignore, 'generated/ must be in .gitignore'
+          print('gitignore check passed — generated/ is ignored')
+          "
