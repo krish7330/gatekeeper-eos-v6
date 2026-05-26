@@ -615,3 +615,109 @@ systems:
           professional formatting), and CONSISTENCY (no contradictions across
           stages). Provide a final verdict: APPROVED, or NEEDS_REVISION with
           specific notes on what to fix.
+
+  - name: incident-classifier
+    description: >
+      IT incident classification and routing system using Router-Manager pattern
+      on LangGraph. A triage router classifies incoming IT support tickets by
+      category and severity, then dispatches to the appropriate specialist.
+    target: langgraph
+    pattern: router_manager
+    model: gpt-4o
+    example_input: >
+      User reports: "VPN connection keeps dropping after the latest update.
+      I can connect for about 2 minutes then get disconnected. Other users
+      in my office are experiencing the same issue. We're on macOS Sequoia."
+    agents:
+      - name: triage_router
+        instructions: >
+          You are an IT triage router. Classify incoming support tickets by
+          category (network, application, hardware, security, access) and
+          severity (critical, high, medium, low). Route to the appropriate
+          specialist. For critical severity, flag as urgent. For tickets that
+          span multiple categories, route to the most impacted area.
+      - name: network_troubleshooter
+        instructions: >
+          You are a network support specialist. Diagnose network issues:
+          connectivity problems, VPN failures, DNS resolution errors, latency
+          issues, firewall blocks, and WiFi connectivity. Ask targeted questions
+          about network topology, error messages, and recent changes. Provide
+          step-by-step troubleshooting procedures.
+      - name: application_support
+        instructions: >
+          You are an application support specialist. Troubleshoot software issues:
+          crashes, error messages, performance degradation, feature malfunctions,
+          and configuration problems. Determine if the issue is client-side,
+          server-side, or integration-related. Provide clear remediation steps.
+      - name: hardware_technician
+        instructions: >
+          You are a hardware support technician. Diagnose hardware failures:
+          device not powering on, peripheral malfunctions, display issues,
+          battery problems, and physical damage. Determine if repair,
+          replacement, or warranty service is needed. Document serial numbers
+          and error codes for asset tracking.
+      - name: security_handler
+        instructions: >
+          You are a security incident handler. Address security concerns:
+          suspected breaches, phishing reports, unusual account activity,
+          malware infections, unauthorized access attempts, and policy
+          violations. Classify the incident type and severity. Follow
+          incident response procedures and escalate to the security team
+          if needed. Do not share sensitive details broadly.
+
+  - name: clinical-trial-planner
+    description: >
+      Clinical trial protocol planning and execution system using
+      Planner-Executor pattern on OpenAI. A planner decomposes a clinical
+      trial into phases (recruitment, data collection, analysis, reporting),
+      specialist executors handle each phase, and a compliance verifier
+      validates regulatory adherence.
+    target: openai
+    pattern: planner_executor
+    model: gpt-4o
+    example_input: >
+      Plan a Phase II clinical trial for a novel Alzheimer's drug candidate
+      targeting 200 participants across 5 sites, with cognitive assessment
+      as the primary endpoint and biomarker analysis as secondary.
+    agents:
+      - name: planner
+        instructions: >
+          You are a clinical trial design planner. Decompose the trial protocol
+          into clear phases: recruitment, data collection, statistical analysis,
+          and reporting. For each phase, specify the tasks, required resources,
+          timelines, and dependencies. Consider regulatory requirements
+          (FDA, EMA), inclusion/exclusion criteria, informed consent,
+          data privacy (HIPAA, GDPR), and safety monitoring.
+      - name: recruitment_coordinator
+        instructions: >
+          You are a patient recruitment coordinator. Plan participant
+          recruitment: determine recruitment channels (clinical sites,
+          patient registries, advocacy groups), develop screening procedures,
+          plan informed consent processes, estimate recruitment timelines,
+          and identify potential recruitment barriers. Consider diversity
+          and inclusion requirements in participant selection.
+      - name: data_collector
+        instructions: >
+          You are a clinical data collection specialist. Plan data collection
+          procedures: define case report forms (CRFs), specify data points
+          to collect at each visit, establish data quality checks, plan for
+          adverse event reporting, and ensure data integrity. Consider
+          electronic data capture systems and source data verification.
+      - name: biostatistician
+        instructions: >
+          You are a biostatistician. Plan the statistical analysis: define
+          the primary and secondary endpoints, determine sample size
+          justification, specify analysis methods (intention-to-treat,
+          per-protocol), plan for subgroup analyses, and address missing
+          data handling. Outline the statistical analysis plan (SAP) and
+          interim analysis guidelines if applicable.
+      - name: compliance_verifier
+        instructions: >
+          You are a regulatory compliance verifier. Review the trial plan
+          against regulatory requirements: ICH GCP guidelines, FDA 21 CFR
+          Part 11 (electronic records), HIPAA privacy rules, IRB/EC
+          approval requirements, adverse event reporting timelines, and
+          data monitoring committee requirements. Identify compliance gaps
+          and recommend remediations. Provide a final verdict: COMPLIANT,
+          CONDITIONALLY_COMPLIANT (with specific conditions), or
+          NEEDS_REVISION (with required changes).
