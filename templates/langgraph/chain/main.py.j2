@@ -1,0 +1,78 @@
+"""
+{{ system.name }} - {{ system.description | trim }}
+Pattern: Chain (LangGraph)
+"""
+
+from typing import TypedDict, Annotated, Sequence
+from operator import add
+import os
+
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
+from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+
+
+# ---------------------------------------------------------------------------
+# State
+# ---------------------------------------------------------------------------
+class AgentState(TypedDict):
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+
+
+# ---------------------------------------------------------------------------
+# Agent nodes (linear chain)
+# ---------------------------------------------------------------------------
+{% for agent in system.agents %}
+def {{ agent.name }}_node(state: AgentState):
+    """{{ agent.instructions | trim }}"""
+    llm = ChatOpenAI(model="{{ system.model }}")
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """{{ agent.instructions | trim }}"""),
+        ("messages", "{messages}"),
+    ])
+    chain = prompt | llm
+    result = chain.invoke(state)
+    return {"messages": [result]}
+
+{% endfor %}
+
+# ---------------------------------------------------------------------------
+# Graph construction (linear pipeline)
+# ---------------------------------------------------------------------------
+builder = StateGraph(AgentState)
+
+# Add all nodes
+{% for agent in system.agents %}
+builder.add_node("{{ agent.name }}", {{ agent.name }}_node)
+{% endfor %}
+
+# Linear edges: START → agent[0] → agent[1] → ... → agent[N-1] → END
+{% for agent in system.agents %}
+{% if loop.first %}
+builder.add_edge(START, "{{ agent.name }}")
+{% else %}
+builder.add_edge("{{ system.agents[loop.index0 - 1].name }}", "{{ agent.name }}")
+{% endif %}
+{% endfor %}
+builder.add_edge("{{ system.agents[-1].name }}", END)
+
+graph = builder.compile()
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def main() -> None:
+    user_input = os.environ.get("USER_INPUT", "{{ system.example_input }}")
+    print(f"User: {user_input}\n")
+
+    result = graph.invoke({"messages": [HumanMessage(content=user_input)]})
+    for msg in result["messages"]:
+        if hasattr(msg, "content") and msg.content:
+            print(f"{msg.type}: {msg.content}")
+
+
+if __name__ == "__main__":
+    main()

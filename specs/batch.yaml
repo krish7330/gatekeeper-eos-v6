@@ -99,3 +99,28 @@ systems:
         instructions: >
           You are a technical writer. Produce clear documentation, API references,
           and technical guides. Use precise language and include code examples.
+
+  - name: data-pipeline-chain
+    description: >
+      Multi-stage data processing pipeline using Chain pattern.
+      Each agent processes and enriches data before passing to the next stage.
+    target: openai
+    pattern: chain
+    model: gpt-4o
+    example_input: "Extract key insights from this customer feedback dataset."
+    agents:
+      - name: extractor
+        instructions: >
+          You are a data extractor. Parse raw customer feedback and extract
+          structured data points: sentiment, topic, urgency, and key phrases.
+          Output only the extracted data in a clean format.
+      - name: analyzer
+        instructions: >
+          You are a data analyst. Take the extracted data and identify trends,
+          patterns, and actionable insights. Provide a concise analysis with
+          specific metrics and recommendations.
+      - name: formatter
+        instructions: >
+          You are a report formatter. Take the analysis and produce a polished,
+          well-structured report suitable for executive review. Use clear
+          sections and professional language.
