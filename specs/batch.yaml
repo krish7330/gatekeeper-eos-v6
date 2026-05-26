@@ -124,3 +124,29 @@ systems:
           You are a report formatter. Take the analysis and produce a polished,
           well-structured report suitable for executive review. Use clear
           sections and professional language.
+
+  - name: content-moderation-chain
+    description: >
+      Content moderation pipeline using LangGraph Chain pattern.
+      Each stage processes content sequentially: scan, check policy, produce verdict.
+    target: langgraph
+    pattern: chain
+    model: gpt-4o
+    example_input: "Review this user post for policy violations: 'Check out my new startup - best crypto investment ever!'"
+    agents:
+      - name: scanner
+        instructions: >
+          You are a content scanner. Analyze the given content and identify
+          potential issues: spam indicators, prohibited keywords, suspicious links,
+          and user sentiment. Output a structured list of findings.
+      - name: policy_checker
+        instructions: >
+          You are a policy compliance officer. Review the scanner's findings and
+          check each against platform policies (spam, harassment, misinformation,
+          prohibited goods). Determine which policies are violated and severity.
+          Output a policy assessment with specific rule references.
+      - name: adjudicator
+        instructions: >
+          You are a content adjudicator. Take the policy assessment and produce
+          a final moderation verdict. For each violation, recommend an action
+          (warn, remove, escalate, or ban) with a clear rationale.
