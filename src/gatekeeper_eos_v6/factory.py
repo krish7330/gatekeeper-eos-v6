@@ -60,7 +60,7 @@ def validate_spec(spec: dict) -> list[str]:
             errors.append(f"{prefix}: target must be one of {SUPPORTED_TARGETS}")
         if sys_def.get("pattern") not in SUPPORTED_PATTERNS:
             errors.append(f"{prefix}: pattern must be one of {SUPPORTED_PATTERNS}")
-        if "agents" not in sys_def or not isinstance(sys_def["agents"], list):
+        if "agents" not in sys_def or not isinstance(sys_def["agents"], list) or len(sys_def["agents"]) == 0:
             errors.append(f"{prefix}: must have at least one agent in 'agents' list")
 
     return errors

@@ -1,27 +1,24 @@
-# Python
+
 __pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-venv/
-.uv/
-dist/
-build/
-
-# Generated output (factory output is reproducible from specs)
-generated/
-
-# Environment
+.coverage
+.DS_Store
 .env
 .env.*
-
-# OS
-.DS_Store
-Thumbs.db
-
-# IDE
-.vscode/
 .idea/
-*.swp
+.uv/
+.venv/
+.vscode/
+*.egg-info/
+*.py[cod]
 *.swo
-.coverage
+*.swp
+# Environment
+# Generated output (factory output is reproducible from specs)
+# IDE
+# OS
+# Python
+build/
+dist/
+generated/
+Thumbs.db
+venv/
