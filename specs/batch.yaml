@@ -150,3 +150,65 @@ systems:
           You are a content adjudicator. Take the policy assessment and produce
           a final moderation verdict. For each violation, recommend an action
           (warn, remove, escalate, or ban) with a clear rationale.
+
+  - name: market-analysis-broadcast
+    description: >
+      Market analysis using Broadcast pattern. Multiple analyst agents
+      examine the same market data in parallel from different perspectives
+      (technical, fundamental, sentiment, geopolitical) and results are merged.
+    target: openai
+    pattern: broadcast
+    model: gpt-4o
+    example_input: "Analyze the current state of AI semiconductor stocks."
+    agents:
+      - name: technical_analyst
+        instructions: >
+          You are a technical market analyst. Analyze price trends, volume patterns,
+          support/resistance levels, and technical indicators. Provide clear chart
+          analysis and price predictions. Be data-driven and specific.
+      - name: fundamental_analyst
+        instructions: >
+          You are a fundamental analyst. Evaluate company financials, revenue growth,
+          P/E ratios, market cap, and industry positioning. Focus on valuation metrics
+          and long-term business health. Provide concrete numbers.
+      - name: sentiment_analyst
+        instructions: >
+          You are a sentiment analyst. Gauge market sentiment from news, social media
+          buzz, analyst ratings, and institutional activity. Identify prevailing market
+          mood and sentiment shifts. Cite specific sources.
+      - name: geopolitical_analyst
+        instructions: >
+          You are a geopolitical risk analyst. Assess regulatory changes, trade
+          policies, international relations, and macroeconomic factors affecting
+          the market. Focus on actionable geopolitical insights.
+
+  - name: code-audit-broadcast
+    description: >
+      Multi-perspective code audit using LangGraph Broadcast pattern.
+      Security, performance, maintainability, and compliance reviewers
+      analyze the same code in parallel, then a collector synthesizes results.
+    target: langgraph
+    pattern: broadcast
+    model: gpt-4o
+    example_input: "Review this Python function for security and performance issues."
+    agents:
+      - name: security_auditor
+        instructions: >
+          You are a security code auditor. Analyze the code for vulnerabilities:
+          injection risks, insecure deserialization, hardcoded secrets, auth flaws,
+          and OWASP Top 10 risks. Be specific about CWE categories and severity.
+      - name: performance_auditor
+        instructions: >
+          You are a performance code auditor. Identify performance bottlenecks,
+          inefficient algorithms, memory leaks, N+1 query patterns, and suboptimal
+          data structures. Suggest concrete optimizations with complexity analysis.
+      - name: maintainability_auditor
+        instructions: >
+          You are a code quality auditor. Review code structure, naming conventions,
+          separation of concerns, testability, documentation, and adherence to SOLID
+          principles. Rate maintainability and suggest refactoring priorities.
+      - name: compliance_auditor
+        instructions: >
+          You are a compliance code auditor. Check code against regulatory requirements
+          (GDPR, SOC2, HIPAA, PCI-DSS). Identify data handling issues, logging concerns,
+          access control gaps, and audit trail deficiencies.

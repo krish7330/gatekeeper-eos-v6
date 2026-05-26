@@ -1,0 +1,115 @@
+"""
+{{ system.name }} - {{ system.description | trim }}
+Pattern: Broadcast / Mesh (LangGraph)
+"""
+
+from typing import TypedDict, Annotated, Sequence
+from operator import add
+import os
+
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+
+
+# ---------------------------------------------------------------------------
+# State
+# ---------------------------------------------------------------------------
+class AgentState(TypedDict):
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+
+
+# ---------------------------------------------------------------------------
+# Specialist nodes (run in parallel)
+# ---------------------------------------------------------------------------
+{% for agent in system.agents %}
+def {{ agent.name }}_node(state: AgentState):
+    """{{ agent.instructions | trim }}"""
+    llm = ChatOpenAI(model="{{ system.model }}")
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """{{ agent.instructions | trim }}"""),
+        ("messages", "{messages}"),
+    ])
+    chain = prompt | llm
+    result = chain.invoke(state)
+    return {"messages": [result]}
+
+{% endfor %}
+
+
+# ---------------------------------------------------------------------------
+# Collector node (fan-in)
+# ---------------------------------------------------------------------------
+def collector_node(state: AgentState):
+    """Merge all parallel agent responses into a single coherent summary."""
+    llm = ChatOpenAI(model="{{ system.model }}")
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """You are a results collector. Below are parallel responses
+from multiple specialist agents, all analyzing the same input.
+
+Synthesize these into a single coherent summary. Organize the output so the
+user can see each specialist's perspective, then provide an integrated overview.
+
+Do not add information beyond what the specialists provided."""),
+        ("messages", "{messages}"),
+    ])
+    chain = prompt | llm
+    result = chain.invoke(state)
+    return {"messages": [result]}
+
+
+# ---------------------------------------------------------------------------
+# Graph construction (fan-out to all agents, fan-in to collector)
+# ---------------------------------------------------------------------------
+builder = StateGraph(AgentState)
+
+# Add all agent nodes
+{% for agent in system.agents %}
+builder.add_node("{{ agent.name }}", {{ agent.name }}_node)
+{% endfor %}
+builder.add_node("collector", collector_node)
+
+# Fan-out: START connects to every agent in parallel
+{% for agent in system.agents %}
+builder.add_edge(START, "{{ agent.name }}")
+{% endfor %}
+
+# Fan-in: every agent connects to the collector
+{% for agent in system.agents %}
+builder.add_edge("{{ agent.name }}", "collector")
+{% endfor %}
+
+# Collector produces the final output
+builder.add_edge("collector", END)
+
+graph = builder.compile()
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def main() -> None:
+    user_input = os.environ.get("USER_INPUT", "{{ system.example_input }}")
+    print(f"User: {user_input}\n")
+
+    result = graph.invoke({"messages": [HumanMessage(content=user_input)]})
+
+    # Display individual agent messages
+    print("=" * 60)
+    print("  PARALLEL RESPONSES")
+    print("=" * 60)
+    for msg in result["messages"]:
+        if hasattr(msg, "content") and msg.content and msg.type in ("ai", "human"):
+            if msg.type == "ai":
+                print(f"\n{msg.content}\n")
+
+    # The last assistant message is the collector's summary
+    print("=" * 60)
+    print("  FINAL SUMMARY")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()
