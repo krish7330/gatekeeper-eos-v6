@@ -1,0 +1,110 @@
+"""
+{{ system.name }} - {{ system.description | trim }}
+Pattern: Supervisor Workers (LangGraph)
+"""
+
+from typing import TypedDict, Annotated, Sequence, Literal
+from operator import add
+import os
+
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
+from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+
+
+# ---------------------------------------------------------------------------
+# State
+# ---------------------------------------------------------------------------
+class AgentState(TypedDict):
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+    next_agent: str
+
+
+# ---------------------------------------------------------------------------
+# Worker nodes
+# ---------------------------------------------------------------------------
+{% for agent in system.agents[1:] %}
+def {{ agent.name }}_node(state: AgentState):
+    """{{ agent.instructions | trim }}"""
+    llm = ChatOpenAI(model="{{ system.model }}")
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """{{ agent.instructions | trim }}"""),
+        ("messages", "{messages}"),
+    ])
+    chain = prompt | llm
+    result = chain.invoke(state)
+    return {"messages": [result]}
+
+{% endfor %}
+
+
+# ---------------------------------------------------------------------------
+# Supervisor node with structured routing
+# ---------------------------------------------------------------------------
+{% set member_names = system.agents[1:] | map(attribute='name') | list %}
+members = [{{ member_names | map('tojson') | join(', ') }}]
+options = Literal[{{ (member_names + ['FINISH']) | map('tojson') | join(', ') }}]
+
+
+class RouteResponse(TypedDict):
+    next: options
+    rationale: str
+
+
+def {{ system.agents[0].name }}_node(state: AgentState):
+    """{{ system.agents[0].instructions | trim }}"""
+    llm = ChatOpenAI(model="{{ system.model }}")
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """{{ system.agents[0].instructions | trim }}
+
+Available workers: {members}"""),
+        ("messages", "{messages}"),
+    ]).partial(members=", ".join(members))
+
+    chain = prompt | llm.with_structured_output(RouteResponse)
+    response = chain.invoke(state)
+    return {"next_agent": response["next"]}
+
+
+# ---------------------------------------------------------------------------
+# Graph
+# ---------------------------------------------------------------------------
+builder = StateGraph(AgentState)
+
+builder.add_node("{{ system.agents[0].name }}", {{ system.agents[0].name }}_node)
+{% for agent in system.agents[1:] %}
+builder.add_node("{{ agent.name }}", {{ agent.name }}_node)
+{% endfor %}
+
+builder.add_edge(START, "{{ system.agents[0].name }}")
+
+builder.add_conditional_edges(
+    "{{ system.agents[0].name }}",
+    lambda state: state["next_agent"],
+    {name: name for name in members} | {"FINISH": END},
+)
+
+{% for agent in system.agents[1:] %}
+builder.add_edge("{{ agent.name }}", "{{ system.agents[0].name }}")
+{% endfor %}
+
+graph = builder.compile()
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def main() -> None:
+    user_input = os.environ.get("USER_INPUT", "{{ system.example_input }}")
+    print(f"User: {user_input}\n")
+
+    result = graph.invoke({"messages": [HumanMessage(content=user_input)], "next_agent": ""})
+    for msg in result["messages"]:
+        if hasattr(msg, "content") and msg.content:
+            print(f"{msg.type}: {msg.content}")
+
+
+if __name__ == "__main__":
+    main()

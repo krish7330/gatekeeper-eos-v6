@@ -1,0 +1,49 @@
+"""
+{{ system.name }} - {{ system.description | trim }}
+Pattern: Agents as Tools (OpenAI Agents SDK)
+"""
+
+import asyncio
+import os
+from agents import Agent, Runner
+
+
+# ---------------------------------------------------------------------------
+# Specialist agents (used as tools by the main agent)
+# ---------------------------------------------------------------------------
+{% for agent in system.agents[1:] %}
+{{ agent.name }}_agent = Agent(
+    name="{{ agent.name | replace('_', ' ') | title }}",
+    instructions="""{{ agent.instructions | trim }}""",
+)
+{% endfor %}
+
+# Convert specialists into tools
+specialist_tools = [
+    {% for agent in system.agents[1:] %}
+    {{ agent.name }}_agent.as_tool(
+        tool_name="{{ agent.name }}",
+        tool_description="Call when the task involves {{ agent.name | replace('_', ' ') }} work.",
+    ),
+    {% endfor %}
+]
+
+# Main orchestrator agent uses specialists as tools
+{{ system.agents[0].name }}_agent = Agent(
+    name="{{ system.agents[0].name | replace('_', ' ') | title }}",
+    instructions="""{{ system.agents[0].instructions | trim }}""",
+    tools=specialist_tools,
+)
+
+
+async def main() -> None:
+    """Run the orchestrator workflow with agents-as-tools."""
+    user_input = os.environ.get("USER_INPUT", "{{ system.example_input }}")
+    print(f"User: {user_input}\n")
+
+    result = await Runner.run({{ system.agents[0].name }}_agent, user_input)
+    print(f"\nResponse: {result.final_output}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

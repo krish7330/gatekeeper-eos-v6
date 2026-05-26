@@ -1,0 +1,47 @@
+"""
+{{ system.name }} - {{ system.description | trim }}
+Pattern: Router Manager (OpenAI Agents SDK)
+"""
+
+import asyncio
+import os
+from agents import Agent, Runner, handoff
+
+
+# ---------------------------------------------------------------------------
+# Specialist agents
+# ---------------------------------------------------------------------------
+{% for agent in system.agents[1:] %}
+{{ agent.name }}_agent = Agent(
+    name="{{ agent.name | replace('_', ' ') | title }}",
+    instructions="""{{ agent.instructions | trim }}""",
+)
+{% endfor %}
+
+# Router agent classifies input and hands off to the right specialist
+{{ system.agents[0].name }}_agent = Agent(
+    name="{{ system.agents[0].name | replace('_', ' ') | title }}",
+    instructions="""{{ system.agents[0].instructions | trim }}
+
+Available specialists:
+{% for agent in system.agents[1:] %}- {{ agent.name | replace('_', ' ') }}: {{ agent.instructions | trim }}
+{% endfor %}""",
+    handoffs=[
+        {% for agent in system.agents[1:] %}
+        handoff({{ agent.name }}_agent),
+        {% endfor %}
+    ],
+)
+
+
+async def main() -> None:
+    """Run the router-manager workflow."""
+    user_input = os.environ.get("USER_INPUT", "{{ system.example_input }}")
+    print(f"User: {user_input}\n")
+
+    result = await Runner.run({{ system.agents[0].name }}_agent, user_input)
+    print(f"\nResponse: {result.final_output}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

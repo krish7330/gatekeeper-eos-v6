@@ -1,0 +1,101 @@
+# Agent Factory Batch Specification
+# Each system defines an agentic AI system to generate.
+
+systems:
+  - name: customer-support-openai
+    description: >
+      Multi-agent customer support system using OpenAI Agents SDK.
+      Triage agent hands off to specialized billing, refund, and technical agents.
+    target: openai
+    pattern: handoffs
+    model: gpt-4o
+    example_input: "I need a refund for my last order."
+    agents:
+      - name: triage
+        instructions: >
+          You are the first point of contact. Route users to the right department
+          based on their issue. Departments: billing, refund, technical-support.
+          Be polite and efficient.
+      - name: billing
+        instructions: >
+          You are a billing specialist. Handle invoice questions, payment issues,
+          and account balance inquiries. Provide clear, detailed explanations.
+      - name: refund
+        instructions: >
+          You are a refund specialist. Process refund requests, check eligibility,
+          and explain refund timelines. Always ask for order ID first.
+      - name: technical
+        instructions: >
+          You are a technical support specialist. Troubleshoot product issues,
+          guide users through solutions, and escalate complex problems.
+
+  - name: research-assistant-langgraph
+    description: >
+      Research assistant using LangGraph supervisor-worker pattern.
+      Supervisor routes research queries to specialized worker agents.
+    target: langgraph
+    pattern: supervisor_workers
+    model: gpt-4o
+    example_input: "Research the latest developments in AI agent frameworks."
+    agents:
+      - name: supervisor
+        instructions: >
+          You are a research supervisor. Route tasks to specialized workers
+          based on the research question. Choose: researcher, writer, or FINISH.
+      - name: researcher
+        instructions: >
+          You are a research specialist. Gather and synthesize information
+          on the given topic. Provide comprehensive, cited findings.
+      - name: writer
+        instructions: >
+          You are a technical writer. Take research findings and produce
+          clear, well-structured reports. Focus on readability and accuracy.
+
+  - name: code-review-langgraph
+    description: >
+      Automated code review system using LangGraph with agents-as-tools.
+      A reviewer agent calls specialized linter and style-checker agents.
+    target: langgraph
+    pattern: agents_as_tools
+    model: gpt-4o
+    example_input: "Review this Python function for potential issues."
+    agents:
+      - name: reviewer
+        instructions: >
+          You are a senior code reviewer. Analyze code for bugs, performance
+          issues, and security vulnerabilities. Use your tools to check specifics.
+      - name: linter
+        instructions: >
+          You are a linting specialist. Check code for syntax errors,
+          unused imports, and PEP 8 violations.
+      - name: style
+        instructions: >
+          You are a code style specialist. Review code formatting, naming
+          conventions, and overall code quality against best practices.
+
+  - name: content-pipeline-openai
+    description: >
+      Content generation pipeline using OpenAI Agents SDK router-manager pattern.
+      Router classifies requests and dispatches to content-type specialists.
+    target: openai
+    pattern: router_manager
+    model: gpt-4o
+    example_input: "Write a blog post about microservices architecture."
+    agents:
+      - name: router
+        instructions: >
+          You are a content router. Classify incoming requests by content type
+          (blog, social, email, technical) and dispatch to the appropriate
+          specialist agent. Be accurate in classification.
+      - name: blog_writer
+        instructions: >
+          You are a blog writer. Create engaging, well-structured blog posts
+          with clear headings, examples, and actionable takeaways.
+      - name: social_writer
+        instructions: >
+          You are a social media content creator. Write concise, engaging posts
+          optimized for platforms like Twitter, LinkedIn, and Threads.
+      - name: tech_writer
+        instructions: >
+          You are a technical writer. Produce clear documentation, API references,
+          and technical guides. Use precise language and include code examples.
