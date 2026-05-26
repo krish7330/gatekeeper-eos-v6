@@ -44,7 +44,7 @@ pip install -e ".[dev]"
 # Run the tests
 python -m pytest tests/ -v --tb=short
 
-# Generate all 12 example systems
+# Generate all 17 example systems
 factory specs/batch.yaml
 # or: python -m gatekeeper_eos_v6 specs/batch.yaml
 
@@ -85,7 +85,7 @@ gatekeeper-eos-v6/
 │   │   ├── handoffs/
 │   │   │   ├── main.py.j2
 │   │   │   └── requirements.txt.j2
-│   │   └── ...                 # 7 more patterns
+│   │   └── ...                 # 9 more patterns
 │   └── langgraph/              # LangGraph target
 │       └── ...                 # Mirror of the same patterns
 ├── generated/                  # Output directory (gitignored)
@@ -156,7 +156,8 @@ In `src/gatekeeper_eos_v6/factory.py`, add the new pattern to `SUPPORTED_PATTERN
 SUPPORTED_PATTERNS = {
     "handoffs", "agents_as_tools", "router_manager",
     "supervisor_workers", "chain", "broadcast",
-    "reflection", "debate", "<your_pattern>",
+    "reflection", "debate", "consensus",
+    "planner_executor", "<your_pattern>",
 }
 ```
 
@@ -212,6 +213,8 @@ Study these existing templates for reference:
 - **`templates/openai/broadcast/main.py.j2`** — `asyncio.gather()` parallel execution with result merging
 - **`templates/openai/reflection/main.py.j2`** — For-loop with generator/critic and `APPROVED` keyword check
 - **`templates/langgraph/broadcast/main.py.j2`** — Fan-out / fan-in with `StateGraph` and `add_conditional_edges`
+- **`templates/openai/consensus/main.py.j2`** — Independent analysis → synthesis with `asyncio.gather()` and structured consensus prompt
+- **`templates/openai/planner_executor/main.py.j2`** — Three-phase plan → execute → verify with sequential executor chaining
 - **`templates/openai/handoffs/main.py.j2`** — Agent handoffs via `Agent(handoffs=[...])`
 - **`templates/openai/agents_as_tools/main.py.j2`** — `agent.as_tool()` wrapping
 - **`templates/openai/router_manager/main.py.j2`** — Conditional dispatch with `handoffs`
@@ -231,11 +234,11 @@ Adding a new target (e.g., Amazon Bedrock, CrewAI, Autogen) requires more work t
    SUPPORTED_TARGETS = {"openai", "langgraph", "<your_target>"}
    ```
 
-2. **Create templates** for all 8 patterns under `templates/<your_target>/`:
+2. **Create templates** for all 10 patterns under `templates/<your_target>/`:
 
-   ```bash
-   mkdir -p templates/<your_target>/{handoffs,agents_as_tools,router_manager,supervisor_workers,chain,broadcast,reflection,debate}
-   ```
+```bash
+mkdir -p templates/<your_target>/{handoffs,agents_as_tools,router_manager,supervisor_workers,chain,broadcast,reflection,debate,consensus,planner_executor}
+```
 
    Each needs `main.py.j2` and `requirements.txt.j2`. See existing targets for reference.
 
@@ -380,7 +383,7 @@ The parameterized tests in `test_generation.py` automatically cover new patterns
 Similarly, tests parameterize over `SUPPORTED_TARGETS`. Ensure:
 
 1. The target is added to `SUPPORTED_TARGETS`
-2. Templates exist for all 8 patterns under `templates/<new_target>/`
+2. Templates exist for all 10 patterns under `templates/<new_target>/`
 3. Spec entries exist for the new target in `specs/batch.yaml`
 4. `pytest tests/` passes
 

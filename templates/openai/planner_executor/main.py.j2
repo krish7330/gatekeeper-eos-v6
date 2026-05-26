@@ -1,0 +1,136 @@
+"""
+{{ system.name }} - {{ system.description | trim }}
+Pattern: Planner-Executor (OpenAI Agents SDK)
+
+A planner agent decomposes a complex goal into step-by-step tasks,
+then executor agents work through each task sequentially. A verifier
+agent checks the final result against the original goal.
+"""
+
+import asyncio
+import os
+from agents import Agent, Runner
+
+
+# ---------------------------------------------------------------------------
+# Agents: Planner (first) → Executors (middle) → Verifier (last)
+# ---------------------------------------------------------------------------
+{% set planner = system.agents[0] %}
+{% set executors = system.agents[1:-1] if system.agents | length > 2 else [] %}
+{% set verifier = system.agents[-1] %}
+
+# Planner — breaks down the goal into steps
+{{ planner.name }}_agent = Agent(
+    name="{{ planner.name | replace('_', ' ') | title }}",
+    instructions="""{{ planner.instructions | trim }}""",
+)
+
+{% for agent in executors %}
+# Executor — works through assigned tasks
+{{ agent.name }}_agent = Agent(
+    name="{{ agent.name | replace('_', ' ') | title }}",
+    instructions="""{{ agent.instructions | trim }}""",
+)
+
+{% endfor %}
+# Verifier — checks completeness and quality
+{{ verifier.name }}_agent = Agent(
+    name="{{ verifier.name | replace('_', ' ') | title }}",
+    instructions="""{{ verifier.instructions | trim }}""",
+)
+
+
+async def main() -> None:
+    """Run the planner-executor pipeline: plan → execute → verify."""
+    user_input = os.environ.get("USER_INPUT", "{{ system.example_input }}")
+    print(f"User: {user_input}\n")
+
+    # ---- Phase 1: Planner creates a structured plan ----
+    print("=" * 60)
+    print("  PHASE 1 — PLANNING")
+    print("=" * 60)
+
+    plan_prompt = (
+        f"Goal: {user_input}\n\n"
+        f"Decompose this goal into a clear, step-by-step execution plan. "
+        f"For each step, specify:\n"
+        f"  - What needs to be done\n"
+        f"  - What information or resources are needed\n"
+        f"  - What the expected output of the step is\n\n"
+        f"Number each step. Be specific and actionable."
+    )
+
+    plan_result = await Runner.run({{ planner.name }}_agent, plan_prompt)
+    plan_text = plan_result.final_output
+    print(f"\n{plan_text}")
+
+    # ---- Phase 2: Executors work through the plan ----
+    print("\n" + "=" * 60)
+    print("  PHASE 2 — EXECUTION")
+    print("=" * 60)
+
+    execution_context = plan_text
+
+{% if executors %}
+    {% for executor in executors %}
+    print(f"\n--- Executor: {{ executor.name | replace('_', ' ') | title }} ---")
+    exec_prompt = (
+        f"Original goal: {user_input}\n\n"
+        f"Execution plan:\n{execution_context}\n\n"
+        f"Your task: {{ executor.instructions | trim }}\n\n"
+        f"Execute your part of the plan. Be thorough and specific."
+    )
+    exec_result = await Runner.run({{ executor.name }}_agent, exec_prompt)
+    print(f"\n{exec_result.final_output}")
+    execution_context += f"\n\n--- Results from {{ executor.name | replace('_', ' ') | title }} ---\n{exec_result.final_output}"
+    {% endfor %}
+{% else %}
+    # Single executor fallback — the verifier doubles as executor
+    print(f"\n--- Execution ---")
+    exec_prompt = (
+        f"Original goal: {user_input}\n\n"
+        f"Execution plan:\n{execution_context}\n\n"
+        f"Execute the plan above step by step. "
+        f"Provide detailed results for each step."
+    )
+    exec_result = await Runner.run({{ verifier.name }}_agent, exec_prompt)
+    print(f"\n{exec_result.final_output}")
+    execution_context += f"\n\n--- Execution Results ---\n{exec_result.final_output}"
+{% endif %}
+
+    # ---- Phase 3: Verifier checks the final result ----
+    print("\n" + "=" * 60)
+    print("  PHASE 3 — VERIFICATION")
+    print("=" * 60)
+
+    verify_prompt = (
+        f"Original goal: {user_input}\n\n"
+        f"Plan:\n{plan_text}\n\n"
+        f"Execution results:\n{execution_context}\n\n"
+        f"Review the execution results against the original goal. Assess:\n"
+        f"1. COMPLETENESS: Were all parts of the goal addressed?\n"
+        f"2. QUALITY: Is the output thorough and accurate?\n"
+        f"3. GAPS: Are there any missing pieces or unresolved items?\n\n"
+        f"Provide a final verdict: APPROVED, PARTIALLY_APPROVED (with notes), "
+        f"or NEEDS_REVISION (with specific issues)."
+    )
+
+    verify_result = await Runner.run({{ verifier.name }}_agent, verify_prompt)
+    print(f"\n{verify_result.final_output}")
+
+    # Summary
+    print("\n" + "=" * 60)
+    print("  PIPELINE SUMMARY")
+    print("=" * 60)
+    print(f"\nPlanner: {{ planner.name | replace('_', ' ') | title }}")
+{% if executors %}
+    {% for executor in executors %}
+    print(f"Executor: {{ executor.name | replace('_', ' ') | title }}")
+    {% endfor %}
+{% endif %}
+    print(f"Verifier: {{ verifier.name | replace('_', ' ') | title }}")
+    print(f"Total agents: {{ system.agents | length }}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

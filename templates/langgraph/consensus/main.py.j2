@@ -1,0 +1,147 @@
+"""
+{{ system.name }} - {{ system.description | trim }}
+Pattern: Consensus / Agreement Finding (LangGraph)
+
+Multiple agents independently analyze the same problem in parallel,
+then a synthesizer agent identifies areas of agreement and disagreement
+and produces a consensus report.
+"""
+
+from typing import TypedDict, Annotated, Sequence
+from operator import add
+import os
+
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+
+
+# ---------------------------------------------------------------------------
+# State
+# ---------------------------------------------------------------------------
+class AgentState(TypedDict):
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+
+
+# ---------------------------------------------------------------------------
+# Analysts (first N-1 agents, run in parallel)
+# ---------------------------------------------------------------------------
+{% set analysts = system.agents[:-1] %}
+{% set synthesizer = system.agents[-1] %}
+
+{% for agent in analysts %}
+def {{ agent.name }}_node(state: AgentState):
+    """{{ agent.instructions | trim }}"""
+    llm = ChatOpenAI(model="{{ system.model }}")
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """{{ agent.instructions | trim }}"""),
+        ("messages", "{messages}"),
+    ])
+    chain = prompt | llm
+    result = chain.invoke(state)
+    return {"messages": [result]}
+
+{% endfor %}
+
+# ---------------------------------------------------------------------------
+# Synthesizer node (fan-in) — identifies consensus and disagreement
+# ---------------------------------------------------------------------------
+def {{ synthesizer.name }}_node(state: AgentState):
+    """Independent analyses → consensus report highlighting agreement and disagreement."""
+    llm = ChatOpenAI(model="{{ system.model }}")
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """{{ synthesizer.instructions | trim }}
+
+You are a consensus synthesizer. Below you will find independent analyses
+from multiple specialists, all examining the same question.
+
+Produce a structured consensus report that:
+1. Identifies key areas of AGREEMENT across all analysts
+2. Identifies areas of DISAGREEMENT or differing perspectives
+3. Provides a synthesized conclusion that reconciles differences
+4. Highlights any unique insights from individual analysts
+
+Be specific — reference what each analyst said. If there is complete
+agreement, state that clearly. If there are fundamental disagreements,
+explain the basis for each position."""),
+        ("messages", "{messages}"),
+    ])
+    chain = prompt | llm
+    result = chain.invoke(state)
+    return {"messages": [result]}
+
+
+# ---------------------------------------------------------------------------
+# Graph construction (fan-out to analysts, fan-in to synthesizer)
+# ---------------------------------------------------------------------------
+builder = StateGraph(AgentState)
+
+# Add all analyst nodes
+{% for agent in analysts %}
+builder.add_node("{{ agent.name }}", {{ agent.name }}_node)
+{% endfor %}
+# Add synthesizer node
+builder.add_node("{{ synthesizer.name }}", {{ synthesizer.name }}_node)
+
+# Fan-out: START connects to every analyst in parallel
+{% for agent in analysts %}
+builder.add_edge(START, "{{ agent.name }}")
+{% endfor %}
+
+# Fan-in: every analyst connects to the synthesizer
+{% for agent in analysts %}
+builder.add_edge("{{ agent.name }}", "{{ synthesizer.name }}")
+{% endfor %}
+
+# Synthesizer produces the final consensus report
+builder.add_edge("{{ synthesizer.name }}", END)
+
+graph = builder.compile()
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def main() -> None:
+    user_input = os.environ.get("USER_INPUT", "{{ system.example_input }}")
+    print(f"User: {user_input}\n")
+
+    result = graph.invoke({"messages": [HumanMessage(content=user_input)]})
+
+    # Display individual analyses (AI messages before the last)
+    ai_messages = [
+        msg for msg in result["messages"]
+        if hasattr(msg, "content") and msg.content and msg.type == "ai"
+    ]
+
+    print("=" * 60)
+    print("  INDEPENDENT ANALYSIS")
+    print("=" * 60)
+    for msg in ai_messages[:-1]:
+        print(f"\n{msg.content}\n")
+        print("-" * 40)
+
+    # The last AI message is the synthesizer's consensus report
+    if ai_messages:
+        print("=" * 60)
+        print("  CONSENSUS REPORT")
+        print("=" * 60)
+        print(f"\n{ai_messages[-1].content}")
+
+    # Summary
+    print("\n" + "=" * 60)
+    print("  CONSENSUS SUMMARY")
+    print("=" * 60)
+    analyst_names = [
+        {% for agent in analysts %}
+        "{{ agent.name | replace('_', ' ') | title }}"{% if not loop.last %},{% endif %}
+        {% endfor %}
+    ]
+    print(f"\nAnalysts: {len(analyst_names)} perspectives")
+    print(f"Synthesizer: {{ synthesizer.name | replace('_', ' ') | title }}")
+
+
+if __name__ == "__main__":
+    main()

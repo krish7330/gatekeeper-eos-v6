@@ -5,7 +5,7 @@ Generate complete multi-agent AI systems from a single YAML batch specification.
 ## Features
 
 - **Two targets**: [OpenAI Agents SDK](https://github.com/openai/openai-agents-python) and [LangGraph](https://langchain-ai.github.io/langgraph/)
-- **Eight patterns**:
+- **Ten patterns**:
   - **Handoffs** — agents delegate tasks to each other
   - **Agents as Tools** — agents call other agents as sub-routines
   - **Chain** — linear pipeline where each agent passes output to the next
@@ -14,6 +14,8 @@ Generate complete multi-agent AI systems from a single YAML batch specification.
   - **Reflection** — generator + critic loop: output is iteratively refined until approved or max rounds reached
   - **Router Manager** — a router classifies input and dispatches to specialists
   - **Supervisor Workers** — a supervisor orchestrates workers via structured routing
+  - **Consensus** — independent analysis from multiple perspectives, then a synthesizer identifies agreement and disagreement
+  - **Planner-Executor** — a planner decomposes goals into tasks, executors work through them, a verifier checks results
 - **Template-based** — all generated code uses Jinja2 templates for easy customization
 - **Deterministic output** — one folder per system with `main.py`, `README.md`,
   `AGENTS.md`, and `requirements.txt`
@@ -37,11 +39,16 @@ How should your agents coordinate?
 ├── All agents need to analyze the same input?
 │   ├── From different perspectives, independently?
 │   │   └── → **Broadcast / Mesh**
-│   └── Debating opposing positions toward consensus?
-│       └── → **Debate / Consensus**
+│   ├── Debating opposing positions toward consensus?
+│   │   └── → **Debate / Consensus**
+│   └── Independently, then finding agreement/disagreement?
+│       └── → **Consensus**
 │
 ├── Output needs iterative quality improvement?
 │   └── → **Reflection** (generator + critic loop)
+│
+├── A plan is created first, then executed step-by-step?
+│   └── → **Planner-Executor**
 │
 ├── Agents seamlessly hand off to each other mid-conversation?
 │   └── → **Handoffs**
@@ -58,8 +65,10 @@ How should your agents coordinate?
 | **Debate / Consensus** | Parallel positions, judge verdict | Policy analysis, legal reasoning, decision-making with trade-offs | 3+ (N-1 debaters + judge) | No |
 | **Router Manager** | Classification → dispatch | Support triage, content routing, intent-based dispatch | 3+ (router + specialists) | No |
 | **Supervisor Workers** | Dynamic routing with feedback | Research, task decomposition, multi-step reasoning | 3+ (supervisor + workers) | Yes (supervisor re-routes) |
+| **Consensus** | Independent analysis → synthesis | Risk assessment, multi-perspective review, finding agreement | 3+ (N-1 analysts + synthesizer) | No |
 | **Broadcast / Mesh** | Parallel fan-out, fan-in | Market analysis, code audit, multi-perspective review | N (all parallel) | No |
 | **Reflection** | Generate → critique → revise | Code review, essay drafting, iterative refinement | 2 (generator + critic) | Yes (up to `max_rounds`) |
+| **Planner-Executor** | Plan → execute → verify | Feature planning, project execution, complex workflows | 3+ (planner + executors + verifier) | No |
 | **Handoffs** | Agent-to-agent delegation | Customer support, conversational workflows | N (general) | No |
 | **Agents as Tools** | Orchestrator calls specialists | Code review, research, tool-augmented workflows | 3+ (orchestrator + tools) | No |
 
@@ -74,9 +83,11 @@ How should your agents coordinate?
 | **Chain** | 🟢 O(N) sequential | N calls | 🟢 High — fixed pipeline | Sequential | One agent fails → pipeline stalls; no recovery | 2–5 |
 | **Broadcast** | 🟢 O(1) wall-clock | N calls | 🟢 Medium — all run same input | Full parallel | One agent fails → partial results still merged | 2–8 |
 | **Debate** | 🟢 O(1) wall-clock | N calls | 🟡 Medium — depends on judge quality | Full parallel (debaters) | Weak judge → poor verdict; debater failure → missing perspective | 3–6 |
+| **Consensus** | 🟢 O(1) wall-clock | N calls | 🟢 Medium — synthesis-driven | Full parallel (analysts) | Weak synthesizer → false consensus; analyst misses key perspective | 3–6 |
 | **Reflection** | 🟡 O(R) sequential (R = rounds) | 2R calls | 🟡 Low — output evolves each round | Sequential (loop) | Critic always approves → no iteration; critic never approves → max rounds waste | 2 (fixed) |
 | **Router Manager** | 🟢 O(1) sequential | 2 calls | 🟢 High — classification → dispatch | Sequential | Misclassification → wrong specialist; no recovery path | 3–6 |
 | **Supervisor Workers** | 🟡 O(N) sequential with loops | Variable | 🔴 Low — dynamic, emergent | Sequential with loops | Supervisor loops forever → no termination guarantee; worker confusion | 3–6 |
+| **Planner-Executor** | 🟡 O(N) sequential (plan → execute → verify) | N+2 calls | 🟢 Medium — structured phases | Sequential (phases) | Planner creates unexecutable plan → executor fails; verifier too strict → false rejection | 3–5 |
 | **Handoffs** | 🟢 O(1) sequential | 1–N calls | 🟡 Medium — depends on triage | Sequential | Triage misroutes → user frustration; no built-in escalation if wrong | 2–5 |
 | **Agents as Tools** | 🟢 O(1) sequential | Variable | 🟡 Medium — orchestrated | Sequential (tool calls) | Orchestrator over-tools → wasted calls; tool failure → orchestrator must handle | 3–6 |
 
@@ -90,7 +101,9 @@ How should your agents coordinate?
 | Need the **cheapest** answer | **Chain** (2 agents) | Minimal calls with linear flow |
 | Need the **highest quality** | **Reflection** | Iterative refinement up to `max_rounds` |
 | Need **both speed and quality** | **Debate** | Parallel arguments + single judge pass |
-| **Budget-constrained** (fixed call count) | **Chain**, **Broadcast**, **Router Manager** | Predictable N calls |
+| Need **structured multi-perspective review** | **Consensus** | Independent analysis + synthesis identifies agreement |
+| Need **step-by-step plan then execute** | **Planner-Executor** | Decomposes, executes, then verifies |
+| **Budget-constrained** (fixed call count) | **Chain**, **Broadcast**, **Router Manager**, **Consensus** | Predictable N calls |
 | **Variable budget** (adaptive) | **Supervisor Workers** | Supervisor decides how many calls |
 
 ### Failure Modes & Mitigations
@@ -100,10 +113,14 @@ How should your agents coordinate?
 | **Chain** | Agent produces bad intermediate output | All downstream agents operate on garbage | Each agent must validate/parse input; templates use structured prompts |
 | **Broadcast** | One agent hallucinates or fails | Partial result lost; remaining agents unaffected | `asyncio.gather()` collects all — survivor outputs still merge |
 | **Debate** | Judge favors wrong argument | Verdict is incorrect | Judge prompt explicitly instructs evidence-based evaluation; debaters must cite specifics |
+| **Consensus** | Weak synthesizer produces false consensus | Analysis appears agreed but misses critical disagreement | Synthesizer prompt explicitly requires listing both agreement and disagreement points |
+| **Consensus** | Analyst misses key perspective | Blind spot in the synthesis | Analyst instructions cover specific angles; more agents reduce blind-spot risk |
 | **Reflection** | Critic always approves prematurely | Low-quality output accepted | `APPROVED` keyword check is strict (`startswith`); critic instructed to require high standards |
 | **Reflection** | Critic never approves | Exhausts `max_rounds` — output is last revision, not necessarily good | Template shows final output regardless; user sees all rounds |
 | **Router Manager** | Router misclassifies | Wrong specialist receives the task | Router instructions emphasize accuracy; no recovery in current template |
 | **Supervisor Workers** | Supervisor loops indefinitely | Infinite runtime, unbounded cost | No hard termination safeguard — rely on LLM choosing `FINISH`; consider adding max-turn limit |
+| **Planner-Executor** | Planner creates unexecutable plan | Executor agents fail on impossible tasks | Planner instructions emphasize feasibility, concrete steps, and actionable tasks |
+| **Planner-Executor** | Verifier is too strict | Valid output rejected, users see false negatives | Verifier prompt focuses on correctness criteria; final output still shown to user |
 | **Handoffs** | Triage misroutes | Specialist can't handle the request | Specialist has full context; no recovery handoff in current template |
 | **Agents as Tools** | Orchestrator calls too many tools | Wasted API calls | Tool descriptions must be clear; orchestrator decides invocation count |
 
@@ -494,10 +511,10 @@ factory specs/batch.yaml --preview
 # or: python -m gatekeeper_eos_v6 specs/batch.yaml --preview
 ```
 
-This shows a file tree for each of the 12 systems without writing anything. You'll see each system's pattern, target, and agent count:
+This shows a file tree for each of the 17 systems without writing anything. You'll see each system's pattern, target, and agent count:
 
 ```
-Previewing 12 system(s) in ./generated/ …
+Previewing 17 system(s) in ./generated/ …
 
   ./generated/customer-support-openai/
   ├── main.py
@@ -511,7 +528,7 @@ Previewing 12 system(s) in ./generated/ …
 ```
 
 ```bash
-# Step 2 — Generate all 12 systems
+# Step 2 — Generate all 17 systems
 factory specs/batch.yaml
 # or: python -m gatekeeper_eos_v6 specs/batch.yaml
 ```
@@ -519,7 +536,7 @@ factory specs/batch.yaml
 Expected output:
 
 ```
-Generating 12 system(s) …
+Generating 17 system(s) …
   ✓ customer-support-openai → .../generated/customer-support-openai
   ✓ research-assistant-langgraph → .../generated/research-assistant-langgraph
   ✓ code-review-langgraph → .../generated/code-review-langgraph
@@ -533,7 +550,7 @@ Generating 12 system(s) …
   ✓ legal-verdict-langgraph → .../generated/legal-verdict-langgraph
   ✓ code-review-reflection → .../generated/code-review-reflection
 
-Done — 12 system(s) generated in ./generated/
+Done — 17 system(s) generated in ./generated/
 ```
 
 ---
@@ -851,7 +868,7 @@ systems:
   - name: my-system
     description: "A short description"
     target: openai           # or langgraph
-    pattern: handoffs        # or agents_as_tools, broadcast, chain, debate, reflection, router_manager, supervisor_workers
+    pattern: handoffs        # or agents_as_tools, broadcast, chain, consensus, debate, planner_executor, reflection, router_manager, supervisor_workers
     model: gpt-4o
     example_input: "What agents can you use?"
     agents:
@@ -877,8 +894,10 @@ gatekeeper-eos-v6/
 │   │   ├── agents_as_tools/
 │   │   ├── broadcast/
 │   │   ├── chain/
+│   │   ├── consensus/
 │   │   ├── debate/
 │   │   ├── handoffs/
+│   │   ├── planner_executor/
 │   │   ├── reflection/
 │   │   ├── router_manager/
 │   │   └── supervisor_workers/
@@ -886,8 +905,10 @@ gatekeeper-eos-v6/
 │       ├── agents_as_tools/
 │       ├── broadcast/
 │       ├── chain/
+│       ├── consensus/
 │       ├── debate/
 │       ├── handoffs/
+│       ├── planner_executor/
 │       ├── reflection/
 │       ├── router_manager/
 │       └── supervisor_workers/

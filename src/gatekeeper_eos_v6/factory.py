@@ -31,7 +31,7 @@ TEMPLATES_DIR = HERE / "templates"
 GENERATED_DIR = HERE / "generated"
 
 SUPPORTED_TARGETS = {"openai", "langgraph"}
-SUPPORTED_PATTERNS = {"handoffs", "agents_as_tools", "router_manager", "supervisor_workers", "chain", "broadcast", "reflection", "debate"}
+SUPPORTED_PATTERNS = {"handoffs", "agents_as_tools", "router_manager", "supervisor_workers", "chain", "broadcast", "reflection", "debate", "consensus", "planner_executor"}
 
 
 # ---------------------------------------------------------------------------

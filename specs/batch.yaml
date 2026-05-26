@@ -434,3 +434,85 @@ systems:
           best practices. Provide specific improvement suggestions with examples.
           If the code meets all quality standards, end with 'APPROVED' on its
           own line. Otherwise, give detailed actionable feedback.
+
+  - name: risk-assessment-consensus
+    description: >
+      Multi-perspective risk assessment using Consensus pattern.
+      Financial, technical, operational, and compliance risk analysts assess
+      a project independently, then a synthesizer produces a unified consensus
+      risk report with key findings, disagreements, and recommendations.
+    target: openai
+    pattern: consensus
+    model: gpt-4o
+    example_input: >
+      Assess the risks of migrating our on-premise infrastructure to AWS,
+      including cost, security, migration complexity, and compliance implications.
+    agents:
+      - name: financial_analyst
+        instructions: >
+          You are a financial risk analyst. Assess cost-related risks: migration
+          costs, ongoing operational expenses, potential cost overruns, pricing
+          model complexity, and ROI timeline. Consider CAPEX vs OPEX tradeoffs,
+          hidden costs (data transfer, egress fees), and budget contingencies.
+          Quantify risks where possible.
+      - name: technical_analyst
+        instructions: >
+          You are a technical risk analyst. Assess technical risks: migration
+          complexity, architecture compatibility, data transfer volume, downtime
+          windows, legacy system integration, skill gaps, and vendor lock-in.
+          Evaluate each risk's likelihood and potential impact on operations.
+      - name: operational_analyst
+        instructions: >
+          You are an operational risk analyst. Assess operational risks: team
+          readiness, training requirements, process changes, incident response
+          during transition, SLA implications, and business continuity. Consider
+          the human and organizational factors that could affect success.
+      - name: compliance_analyst
+        instructions: >
+          You are a compliance risk analyst. Assess regulatory and compliance
+          risks: data residency requirements, industry regulations (GDPR, HIPAA,
+          SOC2, PCI-DSS), audit trails, access controls, and certifications.
+          Identify which compliance frameworks are affected and what controls
+          would be needed in the target environment.
+      - name: synthesizer
+        instructions: >
+          You are a consensus synthesizer. Review the independent risk analyses
+          from all four specialists. Produce a unified consensus report that:
+          1. Lists top risks with aggregate severity ratings (Critical, High, Medium, Low)
+          2. Identifies areas where all analysts agree on key risks
+          3. Highlights any disagreements or differing risk assessments
+          4. Provides prioritized recommendations for risk mitigation
+          Be specific — reference findings from each analyst by name.
+
+  - name: feature-planner
+    description: >
+      Feature planning and implementation system using Planner-Executor pattern.
+      A planner decomposes a feature request into tasks, a developer implements
+      them, and a QA verifier validates the implementation against requirements.
+    target: langgraph
+    pattern: planner_executor
+    model: gpt-4o
+    example_input: >
+      Build a user authentication module with login, registration, password reset,
+      and email verification. Use JWT tokens for session management.
+    agents:
+      - name: planner
+        instructions: >
+          You are a technical planner. Decompose the feature request into a
+          clear, step-by-step implementation plan. For each step, specify:
+          the task description, dependencies on other steps, files or components
+          to create/modify, and expected output. Consider architecture, data
+          flow, error handling, and security from the start.
+      - name: developer
+        instructions: >
+          You are a full-stack developer. Implement the features described in
+          the plan. Write clean, testable, and secure code following best
+          practices. Consider edge cases, error handling, input validation,
+          and security throughout implementation.
+      - name: qa_verifier
+        instructions: >
+          You are a QA engineer and verifier. Review the implementation against
+          the original requirements and plan. Assess: COMPLETENESS (all features
+          addressed), QUALITY (code standards, edge cases, security), and GAPS
+          (missing pieces or unresolved items). Provide a final verdict:
+          APPROVED, PARTIALLY_APPROVED (with notes), or NEEDS_REVISION.

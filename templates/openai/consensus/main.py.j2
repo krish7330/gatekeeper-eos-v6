@@ -1,0 +1,101 @@
+"""
+{{ system.name }} - {{ system.description | trim }}
+Pattern: Consensus / Agreement Finding (OpenAI Agents SDK)
+
+Multiple agents independently analyze the same problem from their
+assigned perspectives, then a synthesizer agent identifies areas of
+agreement and disagreement and produces a consensus report.
+"""
+
+import asyncio
+import os
+from agents import Agent, Runner
+
+
+# ---------------------------------------------------------------------------
+# Analysts (first N-1 agents) and Synthesizer (last agent)
+# ---------------------------------------------------------------------------
+{% set analysts = system.agents[:-1] %}
+{% set synthesizer = system.agents[-1] %}
+
+# Analyst agents — each examines the input from their own perspective
+{% for agent in analysts %}
+{{ agent.name }}_agent = Agent(
+    name="{{ agent.name | replace('_', ' ') | title }}",
+    instructions="""{{ agent.instructions | trim }}""",
+)
+
+{% endfor %}
+# Synthesizer agent — identifies consensus and disagreement
+{{ synthesizer.name }}_agent = Agent(
+    name="{{ synthesizer.name | replace('_', ' ') | title }}",
+    instructions="""{{ synthesizer.instructions | trim }}""",
+)
+
+
+async def main() -> None:
+    """Run the consensus process: independent analysis → synthesis."""
+    user_input = os.environ.get("USER_INPUT", "{{ system.example_input }}")
+    print(f"User: {user_input}\n")
+
+    # ---- Phase 1: Independent analysis in parallel ----
+    print("=" * 60)
+    print("  INDEPENDENT ANALYSIS")
+    print("=" * 60)
+
+    analysts_list = [
+        {% for agent in analysts %}
+        {{ agent.name }}_agent,
+        {% endfor %}
+    ]
+
+    analysis_results = await asyncio.gather(*[
+        Runner.run(agent, user_input)
+        for agent in analysts_list
+    ])
+
+    for i, agent in enumerate(analysts_list):
+        print(f"\n--- {agent.name} ---")
+        print(analysis_results[i].final_output)
+
+    # ---- Phase 2: Synthesizer finds consensus ----
+    print("\n" + "=" * 60)
+    print("  CONSENSUS SYNTHESIS")
+    print("=" * 60)
+
+    analyses_text = "\n\n".join(
+        f"=== {agent.name} ===\n{result.final_output}"
+        for agent, result in zip(analysts_list, analysis_results)
+    )
+
+    synthesis_prompt = (
+        f"Original question/input: {user_input}\n\n"
+        f"Below are independent analyses from multiple specialists:\n\n"
+        f"{analyses_text}\n\n"
+        f"Review each analysis carefully. Then produce a consensus report that:\n"
+        f"1. Identifies key areas of AGREEMENT across all analysts\n"
+        f"2. Identifies areas of DISAGREEMENT or differing perspectives\n"
+        f"3. Provides a synthesized conclusion that reconciles differences\n"
+        f"4. Highlights any unique insights from individual analysts\n\n"
+        f"Be specific — reference what each analyst said."
+    )
+
+    synthesis = await Runner.run({{ synthesizer.name }}_agent, synthesis_prompt)
+    print(f"\n{synthesis.final_output}")
+
+    # Summary
+    print("\n" + "=" * 60)
+    print("  CONSENSUS SUMMARY")
+    print("=" * 60)
+    analyst_names = [
+        {% for agent in analysts %}
+        "{{ agent.name | replace('_', ' ') | title }}"{% if not loop.last %},{% endif %}
+        {% endfor %}
+    ]
+    print(f"\nAnalysts: {', '.join(analyst_names)}")
+    print(f"Synthesizer: {{ synthesizer.name | replace('_', ' ') | title }}")
+    print(f"Perspectives synthesized: {len(analysts)}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

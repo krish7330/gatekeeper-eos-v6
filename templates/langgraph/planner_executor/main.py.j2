@@ -1,0 +1,187 @@
+"""
+{{ system.name }} - {{ system.description | trim }}
+Pattern: Planner-Executor (LangGraph)
+
+A planner agent decomposes a complex goal into step-by-step tasks,
+executor agents work through each task sequentially, and a verifier
+agent checks the final result against the original goal.
+"""
+
+from typing import TypedDict, Annotated, Sequence, Literal
+from operator import add
+import os
+
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+
+
+# ---------------------------------------------------------------------------
+# State
+# ---------------------------------------------------------------------------
+class AgentState(TypedDict):
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+    phase: str
+    plan: str
+
+
+# ---------------------------------------------------------------------------
+# Agents: Planner (first) → Executors (middle) → Verifier (last)
+# ---------------------------------------------------------------------------
+{% set planner = system.agents[0] %}
+{% set executors = system.agents[1:-1] if system.agents | length > 2 else [] %}
+{% set verifier = system.agents[-1] %}
+
+def {{ planner.name }}_node(state: AgentState) -> dict:
+    """Decompose the goal into a structured execution plan."""
+    llm = ChatOpenAI(model="{{ system.model }}")
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """{{ planner.instructions | trim }}
+
+You are creating a step-by-step execution plan. For each step, specify:
+  - What needs to be done
+  - What information or resources are needed
+  - What the expected output of the step is
+
+Number each step. Be specific and actionable."""),
+        ("messages", "{messages}"),
+    ])
+    chain = prompt | llm
+    result = chain.invoke(state)
+    return {
+        "messages": [result],
+        "phase": "execution",
+        "plan": result.content if hasattr(result, "content") else str(result),
+    }
+
+{% for agent in executors %}
+def {{ agent.name }}_node(state: AgentState) -> dict:
+    """Execute part of the plan based on expertise."""
+    plan = state.get("plan", "")
+    llm = ChatOpenAI(model="{{ system.model }}")
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """{{ agent.instructions | trim }}
+
+Below is the execution plan. Execute your assigned portion of the plan
+based on the context and results from previous executors."""),
+        ("messages", ["{messages}", HumanMessage(content=f"Execution plan:\\n{plan}")]),
+    ])
+    chain = prompt | llm
+    result = chain.invoke(state)
+    return {"messages": [result]}
+
+{% endfor %}
+def {{ verifier.name }}_node(state: AgentState) -> dict:
+    """Review execution results against the original goal and provide a verdict."""
+    plan = state.get("plan", "")
+    llm = ChatOpenAI(model="{{ system.model }}")
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """{{ verifier.instructions | trim }}
+
+Review the execution results against the original goal. Assess:
+1. COMPLETENESS: Were all parts of the goal addressed?
+2. QUALITY: Is the output thorough and accurate?
+3. GAPS: Are there any missing pieces or unresolved items?
+
+Provide a final verdict: APPROVED, PARTIALLY_APPROVED (with notes),
+or NEEDS_REVISION (with specific issues)."""),
+        ("messages", ["{messages}", HumanMessage(content=f"Original plan:\\n{plan}")]),
+    ])
+    chain = prompt | llm
+    result = chain.invoke(state)
+    return {
+        "messages": [result],
+        "phase": "complete",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Graph construction (planner → executors → verifier)
+# ---------------------------------------------------------------------------
+builder = StateGraph(AgentState)
+
+# Add all nodes
+builder.add_node("{{ planner.name }}", {{ planner.name }}_node)
+{% for agent in executors %}
+builder.add_node("{{ agent.name }}", {{ agent.name }}_node)
+{% endfor %}
+builder.add_node("{{ verifier.name }}", {{ verifier.name }}_node)
+
+# START → planner
+builder.add_edge(START, "{{ planner.name }}")
+
+# Executor chain (sequential) — each feeds into the next
+{% if executors %}
+builder.add_edge("{{ planner.name }}", "{{ executors[0].name }}")
+{% for executor in executors %}
+  {% if not loop.first %}
+builder.add_edge("{{ executors[loop.index0 - 1].name }}", "{{ executor.name }}")
+  {% endif %}
+{% endfor %}
+builder.add_edge("{{ executors[-1].name }}", "{{ verifier.name }}")
+{% else %}
+# No dedicated executors — planner → verifier
+builder.add_edge("{{ planner.name }}", "{{ verifier.name }}")
+{% endif %}
+
+# Verifier produces the final output
+builder.add_edge("{{ verifier.name }}", END)
+
+graph = builder.compile()
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def main() -> None:
+    user_input = os.environ.get("USER_INPUT", "{{ system.example_input }}")
+    print(f"User: {user_input}\n")
+
+    print("=" * 60)
+    print("  PLANNER-EXECUTOR PIPELINE")
+    print("=" * 60)
+
+    result = graph.invoke({
+        "messages": [HumanMessage(content=user_input)],
+        "phase": "planning",
+        "plan": "",
+    })
+
+    # Display each phase's output
+    ai_messages = [
+        msg for msg in result["messages"]
+        if hasattr(msg, "content") and msg.content and msg.type == "ai"
+    ]
+
+    {% if executors %}
+    # Messages order: planner, executors..., verifier
+    phase_titles = ["PLANNING", {% for executor in executors %}"EXECUTOR: {{ executor.name | replace('_', ' ') | title }}",{% endfor %} "VERIFICATION"]
+    {% else %}
+    phase_titles = ["PLANNING", "VERIFICATION"]
+    {% endif %}
+
+    for i, msg in enumerate(ai_messages):
+        title = phase_titles[i] if i < len(phase_titles) else f"STEP {i + 1}"
+        print(f"\n{'=' * 60}")
+        print(f"  PHASE — {title}")
+        print(f"{'=' * 60}")
+        print(f"\n{msg.content}")
+
+    # Summary
+    print(f"\n{'=' * 60}")
+    print("  PIPELINE SUMMARY")
+    print(f"{'=' * 60}")
+    print(f"\nPlanner: {{ planner.name | replace('_', ' ') | title }}")
+    {% if executors %}
+    {% for executor in executors %}
+    print(f"Executor: {{ executor.name | replace('_', ' ') | title }}")
+    {% endfor %}
+    {% endif %}
+    print(f"Verifier: {{ verifier.name | replace('_', ' ') | title }}")
+    print(f"Total agents: {{ system.agents | length }}")
+
+
+if __name__ == "__main__":
+    main()
