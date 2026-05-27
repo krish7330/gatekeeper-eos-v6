@@ -171,7 +171,7 @@ def _render_template(env: Environment, template_path: str, system: dict) -> str:
     return template.render(system=system)
 
 
-def generate_system(system: dict, env: Environment) -> Path:
+def generate_system(system: dict, env: Environment, dry_run: bool = False) -> "Path | None":
     """Generate one agentic system into a sub-folder of *GENERATED_DIR*.
 
     Returns the path to the created folder.
@@ -201,13 +201,14 @@ def generate_system(system: dict, env: Environment) -> Path:
     return out_dir
 
 
-def generate_all(spec: dict, env: Environment) -> list[Path]:
+def generate_all(spec: dict, env: Environment, dry_run: bool = False) -> list:
     """Generate all systems defined in *spec* and return their paths."""
-    generated: list[Path] = []
+    generated = []
     for system in spec.get("systems", []):
-        out = generate_system(system, env)
+        out = generate_system(system, env, dry_run=dry_run)
         generated.append(out)
-        print(f"  ✓ {system['name']} → {out}")
+        if not dry_run:
+            print(f"  ✓ {system['name']} → {out}")
     return generated
 
 
@@ -293,6 +294,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Show detailed file stats in preview mode (line counts, sizes)",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print generated files to stdout instead of writing to disk",
+    )
     return parser.parse_args(argv)
 
 
@@ -338,6 +344,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{label} {len(spec['systems'])} system(s) in {output_dir}/ …")
         preview_all(spec, output_dir, env=env, verbose=args.verbose)
         print(f"\n(No files written — use without --preview to generate)")
+        return 0
+
+    if args.dry_run:
+        print(f"Generating {len(spec['systems'])} system(s) to stdout …")
+        results = generate_all(spec, env, dry_run=True)
+        print(f"\nDone — {len(results)} system(s) previewed (no files written)")
         return 0
 
     output_dir.mkdir(parents=True, exist_ok=True)
