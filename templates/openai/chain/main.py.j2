@@ -14,7 +14,7 @@ openai_model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 
 # Create async def call_agent(system_prompt, user_message) -> str helper using client.chat.completions.create
 async def call_agent(system_prompt, user_message):
-    async with AsyncOpenAI(openai_base_url, None) as client:
+    client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"), base_url=openai_base_url)
         response = await client.chat.completions.create(
             model=openai_model,
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_message}],
@@ -22,9 +22,10 @@ async def call_agent(system_prompt, user_message):
         return response.choices[0].message.content
 
 # Store agents as a list of dicts with name and instructions keys from Jinja2 loop
-agents = [
-    {"name": "{{ agent.name }}", "instructions": "{{ agent.instructions | trim }}"}
-    for agent in system.agents
+AGENTS = [
+{% for agent in system.agents %}
+    {"name": "{{ agent.name | replace('_', ' ') | title }}", "instructions": """{{ agent.instructions | trim }}"""},
+{% endfor %}
 ]
 
 async def main() -> None:
