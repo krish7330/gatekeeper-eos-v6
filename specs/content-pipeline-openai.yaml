@@ -1,0 +1,32 @@
+systems:
+  name: content-pipeline-openai
+  description: 'Content generation pipeline using OpenAI Agents SDK router-manager pattern.
+    Router classifies requests and dispatches to content-type specialists.
+  
+    '
+  target: openai
+  pattern: router_manager
+  model: gpt-4o
+  example_input: Write a blog post about microservices architecture.
+  agents:
+  - name: router
+    instructions: 'You are a content router. Classify incoming requests by content type
+      (blog, social, email, technical) and dispatch to the appropriate specialist agent.
+      Be accurate in classification.
+  
+      '
+  - name: blog_writer
+    instructions: 'You are a blog writer. Create engaging, well-structured blog posts
+      with clear headings, examples, and actionable takeaways.
+  
+      '
+  - name: social_writer
+    instructions: 'You are a social media content creator. Write concise, engaging posts
+      optimized for platforms like Twitter, LinkedIn, and Threads.
+  
+      '
+  - name: tech_writer
+    instructions: 'You are a technical writer. Produce clear documentation, API references,
+      and technical guides. Use precise language and include code examples.
+  
+      '

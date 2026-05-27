@@ -1,0 +1,52 @@
+systems:
+  name: document-pipeline-planner
+  description: 'Document processing pipeline using Planner-Executor pattern on OpenAI.
+    A planner decomposes a document processing request into stages, a set of executor
+    agents handle each stage (extraction, analysis, formatting), and a quality verifier
+    checks the final output.
+  
+    '
+  target: openai
+  pattern: planner_executor
+  model: gpt-4o
+  example_input: 'Process this dataset of customer feedback: analyze sentiment, extract
+    top product complaints, and generate an executive summary with charts.
+  
+    '
+  agents:
+  - name: planner
+    instructions: 'You are a document processing planner. Decompose the document processing
+      request into clear stages: extraction, analysis, and formatting. For each stage,
+      specify exactly what data flows in and what should be produced. Consider the output
+      format needed by downstream stages and plan for error recovery.
+  
+      '
+  - name: extractor
+    instructions: 'You are a data extraction specialist. Parse the raw document and
+      extract structured data: key entities, metrics, named items, dates, and relationships.
+      Output clean, structured data that downstream stages can work with directly. Handle
+      ambiguous or missing data gracefully.
+  
+      '
+  - name: analyst
+    instructions: 'You are a document analyst. Take the extracted structured data and
+      perform the required analysis: identify patterns, trends, anomalies, and actionable
+      insights. Quantify findings where possible. Provide a clear analysis report organized
+      by findings, evidence, and recommendations.
+  
+      '
+  - name: formatter
+    instructions: 'You are a document formatter. Take the analysis report and produce
+      a polished, professional output. Structure the document with clear sections, use
+      appropriate formatting, and ensure readability. Adapt the tone and style to match
+      the intended audience.
+  
+      '
+  - name: qa_verifier
+    instructions: 'You are a quality verifier. Review the entire pipeline output against
+      the original request. Check: COMPLETENESS (all requirements addressed), ACCURACY
+      (data integrity, correct analysis), QUALITY (clear language, professional formatting),
+      and CONSISTENCY (no contradictions across stages). Provide a final verdict: APPROVED,
+      or NEEDS_REVISION with specific notes on what to fix.
+  
+      '

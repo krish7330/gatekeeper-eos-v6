@@ -1,0 +1,27 @@
+systems:
+  name: code-review-reflection
+  description: 'Iterative code review using LangGraph Reflection pattern. A developer
+    writes code, a reviewer critiques it, and the loop continues until the code is approved
+    or max rounds reached.
+  
+    '
+  target: langgraph
+  pattern: reflection
+  model: gpt-4o
+  max_rounds: 3
+  example_input: Write a Python function that merges two sorted lists efficiently.
+  agents:
+  - name: developer
+    instructions: 'You are a skilled software developer. Write clean, efficient, and
+      well-documented code based on the requirements. Follow best practices for the
+      given language and problem domain. Handle edge cases.
+  
+      '
+  - name: reviewer
+    instructions: 'You are a senior code reviewer. Review the developer''s code for
+      correctness, performance, readability, edge cases, and adherence to best practices.
+      Provide specific improvement suggestions with examples. If the code meets all
+      quality standards, end with ''APPROVED'' on its own line. Otherwise, give detailed
+      actionable feedback.
+  
+      '

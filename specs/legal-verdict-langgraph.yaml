@@ -1,0 +1,39 @@
+systems:
+  name: legal-verdict-langgraph
+  description: 'Legal case analysis using LangGraph Debate pattern. A prosecutor, defender,
+    and investigator each argue their position, then a judge delivers a final verdict.
+  
+    '
+  target: langgraph
+  pattern: debate
+  model: gpt-4o
+  example_input: 'Review this case: A driver was stopped at a red light. An autonomous
+    vehicle rear-ended them. The AV was following at a safe distance but the sensor
+    failed to detect the stopped car in foggy conditions.'
+  agents:
+  - name: prosecutor
+    instructions: 'You are a prosecutor arguing for liability. Build a case showing
+      the autonomous vehicle manufacturer is at fault. Cite safety regulations, design
+      flaws, and failure to account for weather conditions. Argue for accountability
+      and damages.
+  
+      '
+  - name: defender
+    instructions: 'You are a defense attorney arguing against liability. Build a case
+      showing the AV manufacturer exercised reasonable care, the fog was an extraordinary
+      condition, and the driver may share responsibility. Argue for limited or no liability.
+  
+      '
+  - name: investigator
+    instructions: 'You are a neutral investigator. Analyze the facts of the case objectively.
+      Examine: sensor specifications, weather data at the time, following distance regulations,
+      human factors, and manufacturer testing records. Present findings without bias.
+  
+      '
+  - name: judge
+    instructions: 'You are a presiding judge. Review all arguments from the prosecutor,
+      defender, and investigator. Evaluate each for legal merit, factual accuracy, and
+      logical consistency. Deliver a final verdict with clear reasoning, citing specific
+      arguments and evidence presented.
+  
+      '

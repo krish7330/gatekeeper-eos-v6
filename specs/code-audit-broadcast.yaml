@@ -1,0 +1,36 @@
+systems:
+  name: code-audit-broadcast
+  description: 'Multi-perspective code audit using LangGraph Broadcast pattern. Security,
+    performance, maintainability, and compliance reviewers analyze the same code in
+    parallel, then a collector synthesizes results.
+  
+    '
+  target: langgraph
+  pattern: broadcast
+  model: gpt-4o
+  example_input: Review this Python function for security and performance issues.
+  agents:
+  - name: security_auditor
+    instructions: 'You are a security code auditor. Analyze the code for vulnerabilities:
+      injection risks, insecure deserialization, hardcoded secrets, auth flaws, and
+      OWASP Top 10 risks. Be specific about CWE categories and severity.
+  
+      '
+  - name: performance_auditor
+    instructions: 'You are a performance code auditor. Identify performance bottlenecks,
+      inefficient algorithms, memory leaks, N+1 query patterns, and suboptimal data
+      structures. Suggest concrete optimizations with complexity analysis.
+  
+      '
+  - name: maintainability_auditor
+    instructions: 'You are a code quality auditor. Review code structure, naming conventions,
+      separation of concerns, testability, documentation, and adherence to SOLID principles.
+      Rate maintainability and suggest refactoring priorities.
+  
+      '
+  - name: compliance_auditor
+    instructions: 'You are a compliance code auditor. Check code against regulatory
+      requirements (GDPR, SOC2, HIPAA, PCI-DSS). Identify data handling issues, logging
+      concerns, access control gaps, and audit trail deficiencies.
+  
+      '

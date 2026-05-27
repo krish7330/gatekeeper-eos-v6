@@ -1,0 +1,26 @@
+systems:
+  name: code-review-langgraph
+  description: 'Automated code review system using LangGraph with agents-as-tools. A
+    reviewer agent calls specialized linter and style-checker agents.
+  
+    '
+  target: langgraph
+  pattern: agents_as_tools
+  model: gpt-4o
+  example_input: Review this Python function for potential issues.
+  agents:
+  - name: reviewer
+    instructions: 'You are a senior code reviewer. Analyze code for bugs, performance
+      issues, and security vulnerabilities. Use your tools to check specifics.
+  
+      '
+  - name: linter
+    instructions: 'You are a linting specialist. Check code for syntax errors, unused
+      imports, and PEP 8 violations.
+  
+      '
+  - name: style
+    instructions: 'You are a code style specialist. Review code formatting, naming conventions,
+      and overall code quality against best practices.
+  
+      '

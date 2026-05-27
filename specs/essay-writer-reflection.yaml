@@ -1,0 +1,26 @@
+systems:
+  name: essay-writer-reflection
+  description: 'Essay writing system using OpenAI Reflection pattern. A generator drafts
+    content, a critic reviews and suggests improvements, and the loop continues until
+    the essay is approved or max rounds reached.
+  
+    '
+  target: openai
+  pattern: reflection
+  model: gpt-4o
+  max_rounds: 3
+  example_input: Write a 300-word persuasive essay on renewable energy adoption.
+  agents:
+  - name: writer
+    instructions: 'You are a professional essay writer. Produce clear, well-structured,
+      and compelling content on the given topic. Use evidence, logical arguments, and
+      a strong narrative voice. Aim for precision and impact.
+  
+      '
+  - name: editor
+    instructions: 'You are a senior editor. Review the writer''s draft for clarity,
+      coherence, argument strength, factual accuracy, grammar, and style. Provide specific,
+      actionable feedback. If the draft meets high editorial standards, respond with
+      ''APPROVED'' followed by brief praise. Otherwise, list concrete improvements needed.
+  
+      '

@@ -1,0 +1,32 @@
+systems:
+  name: customer-support-openai
+  description: 'Multi-agent customer support system using OpenAI Agents SDK. Triage
+    agent hands off to specialized billing, refund, and technical agents.
+  
+    '
+  target: openai
+  pattern: handoffs
+  model: gpt-4o
+  example_input: I need a refund for my last order.
+  agents:
+  - name: triage
+    instructions: 'You are the first point of contact. Route users to the right department
+      based on their issue. Departments: billing, refund, technical-support. Be polite
+      and efficient.
+  
+      '
+  - name: billing
+    instructions: 'You are a billing specialist. Handle invoice questions, payment issues,
+      and account balance inquiries. Provide clear, detailed explanations.
+  
+      '
+  - name: refund
+    instructions: 'You are a refund specialist. Process refund requests, check eligibility,
+      and explain refund timelines. Always ask for order ID first.
+  
+      '
+  - name: technical
+    instructions: 'You are a technical support specialist. Troubleshoot product issues,
+      guide users through solutions, and escalate complex problems.
+  
+      '

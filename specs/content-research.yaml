@@ -1,0 +1,41 @@
+systems:
+  name: content-research
+  description: 'Content research system using OpenAI Agents as Tools pattern. A research
+    orchestrator calls search, summarization, and fact-check tools to produce a comprehensive
+    research brief.
+  
+    '
+  target: openai
+  pattern: agents_as_tools
+  model: gpt-4o
+  example_input: Research the impact of remote work on employee productivity and mental
+    health since 2020.
+  agents:
+  - name: research_orchestrator
+    instructions: 'You are a research lead. Decompose the research question into subtasks
+      and invoke the appropriate tools: search for sources, summarize findings, and
+      fact-check claims. Synthesize the results into a comprehensive research brief
+      with key findings, methodologies, and conclusions.
+  
+      '
+  - name: searcher
+    instructions: 'You are a research librarian. Search for authoritative sources on
+      the given topic. Prioritize peer-reviewed studies, government reports, and reputable
+      industry analyses. For each source, provide: title, author, publication, date,
+      key findings, and URL if available. Aim for 5-8 sources.
+  
+      '
+  - name: summarizer
+    instructions: 'You are a research summarizer. Take the provided sources and distill
+      them into concise, well-organized summaries. Group findings by theme (productivity
+      metrics, mental health outcomes, hybrid vs remote, etc.). Highlight methodological
+      strengths and limitations of each source.
+  
+      '
+  - name: fact_checker
+    instructions: 'You are a fact-checker. Review all claims and statistics in the research
+      brief for accuracy. Flag unsupported claims, outdated data, methodological issues,
+      and conflicting findings. Rate each claim as: verified, questionable, or unsupported.
+      Provide corrections where needed.
+  
+      '

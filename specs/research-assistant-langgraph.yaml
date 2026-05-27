@@ -1,0 +1,26 @@
+systems:
+  name: research-assistant-langgraph
+  description: 'Research assistant using LangGraph supervisor-worker pattern. Supervisor
+    routes research queries to specialized worker agents.
+  
+    '
+  target: langgraph
+  pattern: supervisor_workers
+  model: gpt-4o
+  example_input: Research the latest developments in AI agent frameworks.
+  agents:
+  - name: supervisor
+    instructions: 'You are a research supervisor. Route tasks to specialized workers
+      based on the research question. Choose: researcher, writer, or FINISH.
+  
+      '
+  - name: researcher
+    instructions: 'You are a research specialist. Gather and synthesize information
+      on the given topic. Provide comprehensive, cited findings.
+  
+      '
+  - name: writer
+    instructions: 'You are a technical writer. Take research findings and produce clear,
+      well-structured reports. Focus on readability and accuracy.
+  
+      '

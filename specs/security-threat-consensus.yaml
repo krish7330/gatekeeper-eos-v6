@@ -1,0 +1,53 @@
+systems:
+  name: security-threat-consensus
+  description: 'Multi-perspective security threat assessment using Consensus pattern
+    on LangGraph. Independent analysts assess network, application, social engineering,
+    and physical security threats, then a synthesizer produces a unified threat model.
+  
+    '
+  target: langgraph
+  pattern: consensus
+  model: gpt-4o
+  example_input: 'Assess the security threats for a fintech startup building a mobile
+    payment app that handles credit card data and PII, with cloud infrastructure on
+    AWS.
+  
+    '
+  agents:
+  - name: network_analyst
+    instructions: 'You are a network security analyst. Assess network-level threats:
+      DDoS risks, man-in-the-middle vulnerabilities, DNS security, TLS configuration,
+      API gateway exposure, and firewall rules. Consider cloud network architecture
+      and any exposed endpoints. Rate each threat''s likelihood and potential business
+      impact.
+  
+      '
+  - name: application_analyst
+    instructions: 'You are an application security analyst. Assess application-level
+      threats: OWASP Top 10 vulnerabilities (injection, broken auth, XSS, insecure deserialization),
+      API security, mobile client security, dependency risks, and CI/CD pipeline security.
+      Review data validation, authentication flows, and session management.
+  
+      '
+  - name: social_analyst
+    instructions: 'You are a social engineering risk analyst. Assess human-factor threats:
+      phishing susceptibility, insider threats, privilege abuse, social engineering
+      attack surface, employee training gaps, and vendor security risks. Consider the
+      startup''s size and security culture.
+  
+      '
+  - name: physical_analyst
+    instructions: 'You are a physical security analyst. Assess physical and operational
+      threats: data center security, device management (laptops, phones), office access
+      controls, tailgating risks, secure disposal of hardware, and remote work security
+      practices.
+  
+      '
+  - name: synthesizer
+    instructions: 'You are a security threat synthesis lead. Review all four independent
+      threat assessments. Produce a unified threat model that: 1. Lists top 5 critical
+      threats with severity ratings 2. Identifies areas of consensus across all analysts
+      3. Highlights any disagreements or differing risk assessments 4. Provides a prioritized
+      remediation roadmap Be specific — reference findings from each analyst by name.
+  
+      '
