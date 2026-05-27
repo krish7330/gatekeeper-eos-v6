@@ -247,3 +247,28 @@ def test_generated_files_have_consistent_python_syntax(tmp_path):
                     # that haven't been rendered... but they have been rendered at this point.
                     # If there's a syntax error, it could be an issue with the template.
                     pass
+
+
+def test_dry_run_writes_no_files(tmp_path, monkeypatch):
+    """--dry-run must not create any files or directories."""
+    import gatekeeper_eos_v6.factory as fac
+    monkeypatch.setattr(fac, 'GENERATED_DIR', tmp_path)
+
+    from jinja2 import Environment, FileSystemLoader, select_autoescape
+    env = Environment(
+        loader=FileSystemLoader(str(fac.TEMPLATES_DIR)),
+        autoescape=select_autoescape(['html', 'xml']),
+        trim_blocks=True,
+        lstrip_blocks=True,
+    )
+    system = {
+        'name': 'test-dry',
+        'target': 'openai',
+        'pattern': 'chain',
+        'description': 'Test',
+        'agents': [{'name': 'Agent', 'instructions': 'Do stuff'}],
+        'example_input': 'hello',
+    }
+    result = fac.generate_system(system, env, dry_run=True)
+    assert result is None
+    assert list(tmp_path.iterdir()) == [], 'dry-run must write zero files'
