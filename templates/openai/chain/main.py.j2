@@ -5,19 +5,27 @@ Pattern: Chain (OpenAI Agents SDK)
 
 import asyncio
 import os
-from agents import Agent, Runner
+from openai import AsyncOpenAI
 
 
-# ---------------------------------------------------------------------------
-# Agents (linear chain)
-# ---------------------------------------------------------------------------
-{% for agent in system.agents %}
-{{ agent.name }}_agent = Agent(
-    name="{{ agent.name | replace('_', ' ') | title }}",
-    instructions="""{{ agent.instructions | trim }}""",
-)
+# Read OPENAI_BASE_URL and OPENAI_MODEL from env (defaults: https://api.openai.com/v1, gpt-4o-mini)
+openai_base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+openai_model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 
-{% endfor %}
+# Create async def call_agent(system_prompt, user_message) -> str helper using client.chat.completions.create
+async def call_agent(system_prompt, user_message):
+    async with AsyncOpenAI(openai_base_url, None) as client:
+        response = await client.chat.completions.create(
+            model=openai_model,
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_message}],
+        )
+        return response.choices[0].message.content
+
+# Store agents as a list of dicts with name and instructions keys from Jinja2 loop
+agents = [
+    {"name": "{{ agent.name }}", "instructions": "{{ agent.instructions | trim }}"}
+    for agent in system.agents
+]
 
 async def main() -> None:
     """Run the chain pipeline — each agent passes its output to the next."""
@@ -25,15 +33,13 @@ async def main() -> None:
     print(f"User: {user_input}\n")
 
     # Linear chain: agent 1 → agent 2 → ... → agent N
-    {% for agent in system.agents %}
-    {% if loop.first %}
-    result = await Runner.run({{ agent.name }}_agent, user_input)
-    {% else %}
-    result = await Runner.run({{ agent.name }}_agent, result.final_output)
-    {% endif %}
-    {% endfor %}
+    output = user_input
+    for agent in agents:
+        system_prompt = f"{agent['name']}: {agent['instructions']}"
+        output = await call_agent(system_prompt, output)
+        print(f"\n{agent['name']}: {output}")
 
-    print(f"\nFinal response: {result.final_output}")
+    print(f"\nFinal response: {output}")
 
 
 if __name__ == "__main__":
