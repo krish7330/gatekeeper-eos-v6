@@ -35,7 +35,7 @@ async def main() -> None:
 
     # Linear chain: agent 1 → agent 2 → ... → agent N
     output = user_input
-    for agent in agents:
+    for agent in AGENTS:
         system_prompt = f"{agent['name']}: {agent['instructions']}"
         output = await call_agent(system_prompt, output)
         print(f"\n{agent['name']}: {output}")
