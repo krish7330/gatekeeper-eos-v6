@@ -180,24 +180,31 @@ def generate_system(system: dict, env: Environment, dry_run: bool = False) -> "P
     target = system["target"]
     pattern = system["pattern"]
 
-    out_dir = GENERATED_DIR / name
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if dry_run:
+        print(f"[dry-run] {name}/")
+    else:
+        out_dir = GENERATED_DIR / name
+        out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Render main.py from Jinja2 template
     main_code = _render_template(env, f"{target}/{pattern}/main.py.j2", system)
-    (out_dir / "main.py").write_text(main_code)
-
-    # Render requirements.txt
     reqs = _render_template(env, f"{target}/{pattern}/requirements.txt.j2", system)
+    readme = _generate_readme(system)
+    agents_md = _generate_agents_md(system)
+    config = _generate_system_config(system)
+
+    if dry_run:
+        print(f"  main.py ({len(main_code)} chars)")
+        print(f"  requirements.txt ({len(reqs)} chars)")
+        print(f"  README.md ({len(readme)} chars)")
+        print(f"  AGENTS.md ({len(agents_md)} chars)")
+        print(f"  system.yaml ({len(config)} chars)")
+        return None
+
+    (out_dir / "main.py").write_text(main_code)
     (out_dir / "requirements.txt").write_text(reqs)
-
-    # Generate documentation
-    (out_dir / "README.md").write_text(_generate_readme(system))
-    (out_dir / "AGENTS.md").write_text(_generate_agents_md(system))
-
-    # Write the system spec as a shareable config file
-    (out_dir / "system.yaml").write_text(_generate_system_config(system))
-
+    (out_dir / "README.md").write_text(readme)
+    (out_dir / "AGENTS.md").write_text(agents_md)
+    (out_dir / "system.yaml").write_text(config)
     return out_dir
 
 
