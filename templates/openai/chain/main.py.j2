@@ -11,10 +11,10 @@ from openai import AsyncOpenAI
 # Read OPENAI_BASE_URL and OPENAI_MODEL from env (defaults: https://api.openai.com/v1, gpt-4o-mini)
 openai_base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
 openai_model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"), base_url=openai_base_url)
 
 # Create async def call_agent(system_prompt, user_message) -> str helper using client.chat.completions.create
 async def call_agent(system_prompt, user_message):
-    client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"), base_url=openai_base_url)
         response = await client.chat.completions.create(
             model=openai_model,
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_message}],
