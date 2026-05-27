@@ -22,3 +22,4 @@ dist/
 generated/
 Thumbs.db
 venv/
+.aider*
