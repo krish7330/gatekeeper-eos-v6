@@ -1,5 +1,5 @@
 systems:
-  name: research-assistant-langgraph
+- name: research-assistant-langgraph
   description: 'Research assistant using LangGraph supervisor-worker pattern. Supervisor
     routes research queries to specialized worker agents.
   

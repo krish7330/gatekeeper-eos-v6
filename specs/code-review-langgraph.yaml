@@ -1,5 +1,5 @@
 systems:
-  name: code-review-langgraph
+- name: code-review-langgraph
   description: 'Automated code review system using LangGraph with agents-as-tools. A
     reviewer agent calls specialized linter and style-checker agents.
   

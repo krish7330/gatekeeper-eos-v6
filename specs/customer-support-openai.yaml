@@ -1,5 +1,5 @@
 systems:
-  name: customer-support-openai
+- name: customer-support-openai
   description: 'Multi-agent customer support system using OpenAI Agents SDK. Triage
     agent hands off to specialized billing, refund, and technical agents.
   

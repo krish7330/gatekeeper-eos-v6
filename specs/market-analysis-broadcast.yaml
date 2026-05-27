@@ -1,5 +1,5 @@
 systems:
-  name: market-analysis-broadcast
+- name: market-analysis-broadcast
   description: 'Market analysis using Broadcast pattern. Multiple analyst agents examine
     the same market data in parallel from different perspectives (technical, fundamental,
     sentiment, geopolitical) and results are merged.

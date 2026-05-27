@@ -1,5 +1,5 @@
 systems:
-  name: code-audit-broadcast
+- name: code-audit-broadcast
   description: 'Multi-perspective code audit using LangGraph Broadcast pattern. Security,
     performance, maintainability, and compliance reviewers analyze the same code in
     parallel, then a collector synthesizes results.

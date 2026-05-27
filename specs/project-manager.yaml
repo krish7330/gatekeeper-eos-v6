@@ -1,5 +1,5 @@
 systems:
-  name: project-manager
+- name: project-manager
   description: 'Software project management system using LangGraph Supervisor Workers
     pattern. A project manager supervisor decomposes tasks and assigns them to specialized
     worker agents: designer, developer, tester.

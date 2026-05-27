@@ -1,5 +1,5 @@
 systems:
-  name: clinical-trial-planner
+- name: clinical-trial-planner
   description: 'Clinical trial protocol planning and execution system using Planner-Executor
     pattern on OpenAI. A planner decomposes a clinical trial into phases (recruitment,
     data collection, analysis, reporting), specialist executors handle each phase, and

@@ -1,5 +1,5 @@
 systems:
-  name: content-research
+- name: content-research
   description: 'Content research system using OpenAI Agents as Tools pattern. A research
     orchestrator calls search, summarization, and fact-check tools to produce a comprehensive
     research brief.

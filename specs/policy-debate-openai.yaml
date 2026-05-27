@@ -1,5 +1,5 @@
 systems:
-  name: policy-debate-openai
+- name: policy-debate-openai
   description: 'Policy debate system using OpenAI Debate pattern. Three debaters argue
     pro, con, and neutral positions, then a judge evaluates all arguments and delivers
     a final verdict.

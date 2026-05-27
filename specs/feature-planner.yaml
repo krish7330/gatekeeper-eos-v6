@@ -1,5 +1,5 @@
 systems:
-  name: feature-planner
+- name: feature-planner
   description: 'Feature planning and implementation system using Planner-Executor pattern.
     A planner decomposes a feature request into tasks, a developer implements them,
     and a QA verifier validates the implementation against requirements.

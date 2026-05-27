@@ -1,5 +1,5 @@
 systems:
-  name: essay-writer-reflection
+- name: essay-writer-reflection
   description: 'Essay writing system using OpenAI Reflection pattern. A generator drafts
     content, a critic reviews and suggests improvements, and the loop continues until
     the essay is approved or max rounds reached.

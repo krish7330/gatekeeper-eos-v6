@@ -1,5 +1,5 @@
 systems:
-  name: security-threat-consensus
+- name: security-threat-consensus
   description: 'Multi-perspective security threat assessment using Consensus pattern
     on LangGraph. Independent analysts assess network, application, social engineering,
     and physical security threats, then a synthesizer produces a unified threat model.

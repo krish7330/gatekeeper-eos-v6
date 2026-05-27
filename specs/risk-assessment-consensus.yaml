@@ -1,5 +1,5 @@
 systems:
-  name: risk-assessment-consensus
+- name: risk-assessment-consensus
   description: 'Multi-perspective risk assessment using Consensus pattern. Financial,
     technical, operational, and compliance risk analysts assess a project independently,
     then a synthesizer produces a unified consensus risk report with key findings, disagreements,

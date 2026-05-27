@@ -1,5 +1,5 @@
 systems:
-  name: healthcare-triage
+- name: healthcare-triage
   description: 'Medical triage system using Handoffs pattern. A triage nurse agent assesses
     patient symptoms and hands off to the appropriate specialist: cardiology, neurology,
     or general medicine.

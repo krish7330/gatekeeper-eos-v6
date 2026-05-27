@@ -1,5 +1,5 @@
 systems:
-  name: data-pipeline-chain
+- name: data-pipeline-chain
   description: 'Multi-stage data processing pipeline using Chain pattern. Each agent
     processes and enriches data before passing to the next stage.
   

@@ -1,5 +1,5 @@
 systems:
-  name: content-pipeline-openai
+- name: content-pipeline-openai
   description: 'Content generation pipeline using OpenAI Agents SDK router-manager pattern.
     Router classifies requests and dispatches to content-type specialists.
   

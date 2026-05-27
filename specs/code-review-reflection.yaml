@@ -1,5 +1,5 @@
 systems:
-  name: code-review-reflection
+- name: code-review-reflection
   description: 'Iterative code review using LangGraph Reflection pattern. A developer
     writes code, a reviewer critiques it, and the loop continues until the code is approved
     or max rounds reached.

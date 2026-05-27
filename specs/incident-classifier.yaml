@@ -1,5 +1,5 @@
 systems:
-  name: incident-classifier
+- name: incident-classifier
   description: 'IT incident classification and routing system using Router-Manager pattern
     on LangGraph. A triage router classifies incoming IT support tickets by category
     and severity, then dispatches to the appropriate specialist.

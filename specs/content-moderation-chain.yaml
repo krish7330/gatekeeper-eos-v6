@@ -1,5 +1,5 @@
 systems:
-  name: content-moderation-chain
+- name: content-moderation-chain
   description: 'Content moderation pipeline using LangGraph Chain pattern. Each stage
     processes content sequentially: scan, check policy, produce verdict.
   

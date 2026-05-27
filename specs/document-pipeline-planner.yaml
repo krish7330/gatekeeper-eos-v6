@@ -1,5 +1,5 @@
 systems:
-  name: document-pipeline-planner
+- name: document-pipeline-planner
   description: 'Document processing pipeline using Planner-Executor pattern on OpenAI.
     A planner decomposes a document processing request into stages, a set of executor
     agents handle each stage (extraction, analysis, formatting), and a quality verifier

@@ -1,5 +1,5 @@
 systems:
-  name: legal-verdict-langgraph
+- name: legal-verdict-langgraph
   description: 'Legal case analysis using LangGraph Debate pattern. A prosecutor, defender,
     and investigator each argue their position, then a judge delivers a final verdict.
   
