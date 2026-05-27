@@ -306,6 +306,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Print generated files to stdout instead of writing to disk",
     )
+    parser.add_argument(
+        "--filter",
+        metavar="NAME",
+        help="Only process the system with this name",
+    )
     return parser.parse_args(argv)
 
 
@@ -352,6 +357,12 @@ def main(argv: list[str] | None = None) -> int:
         preview_all(spec, output_dir, env=env, verbose=args.verbose)
         print(f"\n(No files written — use without --preview to generate)")
         return 0
+
+    if args.filter:
+        spec["systems"] = [s for s in spec["systems"] if s.get("name") == args.filter]
+        if not spec["systems"]:
+            print(f"Error: no system named {args.filter!r} in spec", file=__import__("sys").stderr)
+            return 1
 
     if args.dry_run:
         print(f"Generating {len(spec['systems'])} system(s) to stdout …")
