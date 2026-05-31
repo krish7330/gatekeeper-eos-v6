@@ -292,6 +292,140 @@ CampaignExecutor.run_agentic_session():
 
 ---
 
+---
+
+## Part VI — LLM Provider Configuration
+
+The LLM provider subsystem (`src/gatekeeper_eos_v6/providers.py`) provides a
+unified interface for LLM-based action selection within the agentic
+orchestrator. Four providers are supported, all implementing the same
+`LLMProvider` ABC.
+
+### Provider Matrix
+
+| Provider | Config `type` | Model Example | Env Var | SDK |
+|----------|---------------|---------------|---------|-----|
+| **OpenAI** | `openai` | `gpt-4o-mini` | `OPENAI_API_KEY` | `openai` |
+| **Anthropic** | `anthropic` | `claude-sonnet-4-20250514` | `ANTHROPIC_API_KEY` | `anthropic` |
+| **Google (Gemini)** | `google` / `gemini` | `gemini-2.0-flash` | `GEMINI_API_KEY` | `google-genai` |
+| **Groq** (via OpenAI compat) | `openai` + `base_url` | `llama-3.3-70b-versatile` | `OPENAI_API_KEY` (set to Groq key) | `openai` |
+| **Mock** | `mock` | `mock` | None | Built-in |
+
+### YAML Configuration
+
+All providers are wired through the `llm_provider_config` block in a session's
+`agentic_config`:
+
+```yaml
+llm_provider_config:
+  type: openai              # Provider type (required)
+  model: gpt-4o-mini       # Model name (required)
+  temperature: 0.2          # Sampling temperature (optional, default 0.2)
+  max_tokens: 1024          # Max response tokens (optional, default 1024)
+  base_url: ...             # Custom base URL (optional, openai only)
+  api_key: ...              # Explicit key (optional, prefers env var)
+  max_retries: 3            # Retry attempts (optional, default 3)
+```
+
+### Provider-Specific Examples
+
+**OpenAI** (default — uses `OPENAI_API_KEY`):
+```yaml
+llm_provider_config:
+  type: openai
+  model: gpt-4o-mini
+  temperature: 0.2
+  max_tokens: 1024
+```
+
+**Anthropic** (uses `ANTHROPIC_API_KEY`):
+```yaml
+llm_provider_config:
+  type: anthropic
+  model: claude-sonnet-4-20250514
+  temperature: 0.3
+  max_tokens: 2048
+```
+
+**Google Gemini** (uses `GEMINI_API_KEY`):
+```yaml
+llm_provider_config:
+  type: google
+  model: gemini-2.0-flash
+  temperature: 0.2
+  max_tokens: 2048
+```
+
+**Groq** (OpenAI-compatible — uses `OPENAI_API_KEY` set to Groq key):
+```yaml
+llm_provider_config:
+  type: openai
+  model: llama-3.3-70b-versatile
+  base_url: https://api.groq.com/openai/v1
+  temperature: 0.1
+  max_tokens: 1024
+  max_retries: 3            # handles Groq 429s automatically
+```
+
+**Mock** (no API key needed — for testing / offline):
+```yaml
+llm_provider_config:
+  type: mock
+  model: mock
+```
+
+### Rate Limiting & Retries
+
+All production providers (OpenAI, Anthropic, Google) automatically apply:
+
+| Feature | Details |
+|---------|---------|
+| **RateLimiter** | Token bucket, 60 capacity / 3 tokens/sec default |
+| **Retry logic** | Exponential backoff with jitter, default 3 retries |
+| **Retryable errors** | 429 (rate limit), 503 (unavailable), 502/500 (server), connection/timeout errors |
+| **Non-retryable** | 400, 401, 403, 404, JSON decode errors |
+| **Metrics** | Each provider tracks `retry_count`, `total_retry_delay`, `last_rate_limit_hit` |
+
+### Factory Usage (Python)
+
+```python
+from gatekeeper_eos_v6.providers import create_llm_provider
+
+# OpenAI
+p = create_llm_provider("openai", model="gpt-4o-mini")
+
+# Anthropic
+p = create_llm_provider("anthropic", model="claude-sonnet-4-20250514")
+
+# Google Gemini
+p = create_llm_provider("google", model="gemini-2.0-flash")
+
+# Groq (OpenAI-compatible)
+p = create_llm_provider("openai", model="llama-3.3-70b-versatile",
+                        base_url="https://api.groq.com/openai/v1")
+
+# Generate an action
+response = p.generate('{"tool": "nmap", "command": "discover"}')
+```
+
+### Provider Switching Pattern
+
+To switch providers in a multi-session campaign, each session's
+`agentic_config` specifies its own `llm_provider_config`. This allows
+different sessions to use different providers — e.g., Groq for fast
+reconnaissance, Claude for report generation, Gemini for cross-referencing.
+
+### Troubleshooting
+
+| Symptom | Likely Cause | Fix |
+|---------|-------------|-----|
+| `ValueError: Missing API key` | Env var not set | Export `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `GEMINI_API_KEY` |
+| Frequent 429 errors | Rate limit exceeded | Increase `max_retries`, reduce `tokens_per_second` in `RateLimiter`, or check provider quota |
+| Empty responses from `generate()` | API error (non-retryable) | Check `provider.retry_count` and `provider.last_rate_limit_hit` for diagnostics |
+| Timeout errors | Network / slow model | Increase `max_retries` or use a faster model |
+
+---
+
 ## Summary
 
 | Subsystem | File(s) | Core Responsibility |
@@ -301,3 +435,4 @@ CampaignExecutor.run_agentic_session():
 | **Hybrid Strategy** | `agentic.py` | Rule→LLM fallback with stall detection (RULE_ENGINE_STALLED) |
 | **Snapshot** | `snapshot.py`, `snapshot.schema.json` | Append-only hash-chained ledger for state recovery |
 | **Campaign** | `campaign.py`, `agentic-plan.schema.json` | Multi-session orchestration with scheduling, deps, drift |
+| **LLM Providers** | `providers.py` | Multi-provider LLM interface (OpenAI, Anthropic, Google, Groq, Mock) with rate limiting & retries |

@@ -32,7 +32,7 @@ from gatekeeper_eos_v6.agentic import (
     MockLLMProvider,
     run_agent_loop,
 )
-from gatekeeper_eos_v6.providers import OpenAIProvider, AnthropicProvider, create_llm_provider
+from gatekeeper_eos_v6.providers import OpenAIProvider, AnthropicProvider, GoogleProvider, create_llm_provider
 from gatekeeper_eos_v6.campaign import (
     load_campaign,
     CampaignValidationError,
@@ -2166,20 +2166,98 @@ class TestE2EYamlLLMProviderConfig:
             objective=mock_llm_plan.get("objective", ""),
         )
 
+    @pytest.fixture(scope="class")
+    def anthropic_plan(self, llm_campaign):
+        """Return the inline plan dict for SESS-anthropic-report."""
+        for s in llm_campaign.sessions:
+            if s.session_id == "SESS-anthropic-report":
+                assert isinstance(s.plan, dict), "Expected inline plan"
+                return s.plan
+        raise AssertionError("SESS-anthropic-report not found")
+
+    @pytest.fixture(scope="class")
+    def groq_plan(self, llm_campaign):
+        """Return the inline plan dict for SESS-groq-recon."""
+        for s in llm_campaign.sessions:
+            if s.session_id == "SESS-groq-recon":
+                assert isinstance(s.plan, dict), "Expected inline plan"
+                return s.plan
+        raise AssertionError("SESS-groq-recon not found")
+
+    @pytest.fixture(scope="class")
+    def gemini_plan(self, llm_campaign):
+        """Return the inline plan dict for SESS-gemini-analysis."""
+        for s in llm_campaign.sessions:
+            if s.session_id == "SESS-gemini-analysis":
+                assert isinstance(s.plan, dict), "Expected inline plan"
+                return s.plan
+        raise AssertionError("SESS-gemini-analysis not found")
+
+    @pytest.fixture
+    def anthropic_agent(self, anthropic_plan, monkeypatch):
+        """Build an AgentCore with Anthropic provider from YAML.
+
+        Uses ``type: anthropic`` which requires ``ANTHROPIC_API_KEY``.
+        We set it here so the fixture can create the provider without
+        a real API key.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-yaml-fixture")
+        return AgentCore.from_agentic_config(
+            config=anthropic_plan["agentic_config"],
+            allowed_tools=anthropic_plan.get("allowed_tools", []),
+            authorized_assets=anthropic_plan.get("authorized_assets", []),
+            objective=anthropic_plan.get("objective", ""),
+        )
+
+    @pytest.fixture
+    def groq_agent(self, groq_plan, monkeypatch):
+        """Build an AgentCore with Groq-backed OpenAI provider from YAML.
+
+        Uses ``type: openai`` with ``base_url`` pointing to Groq's API.
+        Requires ``OPENAI_API_KEY`` (set to a Groq key in production).
+        We set a dummy here so the fixture can create the provider.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-groq-test-yaml-fixture")
+        return AgentCore.from_agentic_config(
+            config=groq_plan["agentic_config"],
+            allowed_tools=groq_plan.get("allowed_tools", []),
+            authorized_assets=groq_plan.get("authorized_assets", []),
+            objective=groq_plan.get("objective", ""),
+        )
+
+    @pytest.fixture
+    def gemini_agent(self, gemini_plan, monkeypatch):
+        """Build an AgentCore with Google/Gemini provider from YAML.
+
+        Uses ``type: google`` which requires ``GEMINI_API_KEY``.
+        We set it here so the fixture can create the provider without
+        a real API key.
+        """
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-yaml-fixture")
+        return AgentCore.from_agentic_config(
+            config=gemini_plan["agentic_config"],
+            allowed_tools=gemini_plan.get("allowed_tools", []),
+            authorized_assets=gemini_plan.get("authorized_assets", []),
+            objective=gemini_plan.get("objective", ""),
+        )
+
     # ------------------------------------------------------------------
     # Campaign loading
     # ------------------------------------------------------------------
 
     def test_llm_campaign_loads(self, llm_campaign):
-        """LLM campaign YAML parses correctly."""
+        """LLM campaign YAML parses correctly with 6 sessions."""
         assert llm_campaign.campaign_id == "CAMP-PENTEST-LLM-2026-Q3"
-        assert len(llm_campaign.sessions) == 3
+        assert len(llm_campaign.sessions) == 6
 
     def test_llm_campaign_session_ids(self, llm_campaign):
-        """All 3 sessions have expected IDs."""
+        """All 6 sessions have expected IDs."""
         session_ids = {s.session_id for s in llm_campaign.sessions}
         assert "SESS-llm-recon" in session_ids
         assert "SESS-hybrid-recon" in session_ids
+        assert "SESS-anthropic-report" in session_ids
+        assert "SESS-groq-recon" in session_ids
+        assert "SESS-gemini-analysis" in session_ids
         assert "SESS-mock-llm-report" in session_ids
 
     def test_llm_campaign_has_llm_provider_config(self, llm_campaign):
@@ -2197,7 +2275,10 @@ class TestE2EYamlLLMProviderConfig:
         """Session dependencies match expected chain."""
         sessions = {s.session_id: s for s in llm_campaign.sessions}
         assert sessions["SESS-hybrid-recon"].dependencies == ("SESS-llm-recon",)
-        assert sessions["SESS-mock-llm-report"].dependencies == ("SESS-hybrid-recon",)
+        assert sessions["SESS-anthropic-report"].dependencies == ("SESS-hybrid-recon",)
+        assert sessions["SESS-groq-recon"].dependencies == ("SESS-anthropic-report",)
+        assert sessions["SESS-gemini-analysis"].dependencies == ("SESS-groq-recon",)
+        assert sessions["SESS-mock-llm-report"].dependencies == ("SESS-gemini-analysis",)
 
     def test_llm_campaign_drift_rules(self, llm_campaign):
         """LLM campaign has drift rules."""
@@ -2292,6 +2373,95 @@ class TestE2EYamlLLMProviderConfig:
         assert "tool" in data
         assert "command" in data
         assert provider.call_count == 1
+
+    # ------------------------------------------------------------------
+    # Anthropic strategy agent (type: anthropic)
+    # ------------------------------------------------------------------
+
+    def test_anthropic_agent_config(self, anthropic_agent, anthropic_plan):
+        """Agent from Anthropic strategy YAML has correct config."""
+        assert anthropic_agent.decision_strategy == "llm"
+        assert anthropic_agent.llm_prompt is not None
+        assert "{{ state }}" in anthropic_plan["agentic_config"]["llm_prompt_template"]
+        assert "Claude" in anthropic_plan["agentic_config"]["llm_prompt_template"]
+        assert anthropic_agent.max_steps == 15
+        assert anthropic_agent.stop_on_criteria_met is True
+        assert anthropic_agent._drift_check_enabled is True
+
+    def test_anthropic_has_provider(self, anthropic_agent):
+        """Anthropic strategy agent has an AnthropicProvider created from config."""
+        assert anthropic_agent.llm_provider is not None
+        assert isinstance(anthropic_agent.llm_provider, AnthropicProvider)
+        assert anthropic_agent.llm_provider.model == "claude-sonnet-4-20250514"
+
+    def test_anthropic_provider_config_values(self, anthropic_agent):
+        """Anthropic provider has correct temperature and max_tokens from YAML."""
+        provider = anthropic_agent.llm_provider
+        assert provider._temperature == 0.3
+        assert provider._max_tokens == 2048
+
+    def test_anthropic_session_dependency(self, llm_campaign):
+        """Anthropic session depends on SESS-hybrid-recon."""
+        sessions = {s.session_id: s for s in llm_campaign.sessions}
+        assert "SESS-hybrid-recon" in sessions["SESS-anthropic-report"].dependencies
+
+    # ------------------------------------------------------------------
+    # Groq strategy agent (type: openai with base_url)
+    # ------------------------------------------------------------------
+
+    def test_groq_agent_config(self, groq_agent, groq_plan):
+        """Agent from Groq strategy YAML has correct config."""
+        assert groq_agent.decision_strategy == "llm"
+        assert groq_agent.llm_prompt is not None
+        assert "Groq" in groq_plan["agentic_config"]["llm_prompt_template"]
+        assert groq_agent.max_steps == 20
+        assert groq_agent._drift_check_enabled is True
+
+    def test_groq_has_provider(self, groq_agent):
+        """Groq strategy agent has an OpenAIProvider with base_url set."""
+        assert groq_agent.llm_provider is not None
+        assert isinstance(groq_agent.llm_provider, OpenAIProvider)
+        assert groq_agent.llm_provider.model == "llama-3.3-70b-versatile"
+
+    def test_groq_provider_config_values(self, groq_agent):
+        """Groq provider has correct temperature and max_tokens from YAML."""
+        provider = groq_agent.llm_provider
+        assert provider._temperature == 0.1
+        assert provider._max_tokens == 1024
+
+    def test_groq_session_dependency(self, llm_campaign):
+        """Groq session depends on SESS-anthropic-report."""
+        sessions = {s.session_id: s for s in llm_campaign.sessions}
+        assert "SESS-anthropic-report" in sessions["SESS-groq-recon"].dependencies
+
+    # ------------------------------------------------------------------
+    # Gemini strategy agent (type: google)
+    # ------------------------------------------------------------------
+
+    def test_gemini_agent_config(self, gemini_agent, gemini_plan):
+        """Agent from Gemini strategy YAML has correct config."""
+        assert gemini_agent.decision_strategy == "llm"
+        assert gemini_agent.llm_prompt is not None
+        assert "Gemini" in gemini_plan["agentic_config"]["llm_prompt_template"]
+        assert gemini_agent.max_steps == 25
+        assert gemini_agent._drift_check_enabled is True
+
+    def test_gemini_has_provider(self, gemini_agent):
+        """Gemini strategy agent has a GoogleProvider created from config."""
+        assert gemini_agent.llm_provider is not None
+        assert isinstance(gemini_agent.llm_provider, GoogleProvider)
+        assert gemini_agent.llm_provider.model == "gemini-2.0-flash"
+
+    def test_gemini_provider_config_values(self, gemini_agent):
+        """Gemini provider has correct temperature and max_tokens from YAML."""
+        provider = gemini_agent.llm_provider
+        assert provider._temperature == 0.2
+        assert provider._max_tokens == 2048
+
+    def test_gemini_session_dependency(self, llm_campaign):
+        """Gemini session depends on SESS-groq-recon."""
+        sessions = {s.session_id: s for s in llm_campaign.sessions}
+        assert "SESS-groq-recon" in sessions["SESS-gemini-analysis"].dependencies
 
     # ------------------------------------------------------------------
     # Existing campaign also parses llm_provider_config (commented)

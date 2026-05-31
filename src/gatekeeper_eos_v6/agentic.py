@@ -1155,6 +1155,13 @@ class AgentCore:
         llm_provider_config = config.get("llm_provider_config")
         if llm_provider_config:
             provider_type = llm_provider_config.get("type", "openai")
+
+            # Common optional params forwarded to all production providers
+            llm_kwargs: dict[str, Any] = {}
+            for key in ("api_key", "base_url", "max_retries"):
+                if key in llm_provider_config:
+                    llm_kwargs[key] = llm_provider_config[key]
+
             if provider_type == "openai":
                 # Lazy import to avoid circular dependency
                 from gatekeeper_eos_v6.providers import OpenAIProvider
@@ -1163,6 +1170,7 @@ class AgentCore:
                     model=llm_provider_config.get("model", "gpt-4o-mini"),
                     temperature=llm_provider_config.get("temperature", 0.2),
                     max_tokens=llm_provider_config.get("max_tokens", 1024),
+                    **llm_kwargs,
                 )
             elif provider_type == "anthropic":
                 from gatekeeper_eos_v6.providers import AnthropicProvider
@@ -1171,6 +1179,16 @@ class AgentCore:
                     model=llm_provider_config.get("model", "claude-sonnet-4-20250514"),
                     temperature=llm_provider_config.get("temperature", 0.2),
                     max_tokens=llm_provider_config.get("max_tokens", 1024),
+                    **llm_kwargs,
+                )
+            elif provider_type in ("google", "gemini"):
+                from gatekeeper_eos_v6.providers import GoogleProvider
+
+                llm_provider = GoogleProvider(
+                    model=llm_provider_config.get("model", "gemini-2.0-flash"),
+                    temperature=llm_provider_config.get("temperature", 0.2),
+                    max_tokens=llm_provider_config.get("max_tokens", 2048),
+                    **llm_kwargs,
                 )
             elif provider_type in ("mock", "test"):
                 llm_provider = MockLLMProvider(

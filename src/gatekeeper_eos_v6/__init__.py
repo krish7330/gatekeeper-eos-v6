@@ -11,5 +11,5 @@ from gatekeeper_eos_v6.agentic import (
     StopReason,
     run_agent_loop,
 )
-from gatekeeper_eos_v6.providers import OpenAIProvider, AnthropicProvider, create_llm_provider
+from gatekeeper_eos_v6.providers import OpenAIProvider, AnthropicProvider, GoogleProvider, create_llm_provider
 from gatekeeper_eos_v6.snapshot import SnapshotEntry, SnapshotIndex, SnapshotLedger, take_snapshot, context_revalidation

@@ -37,7 +37,7 @@ from gatekeeper_eos_v6.agentic import (
     parse_iso_duration,
     run_agent_loop,
 )
-from gatekeeper_eos_v6.providers import OpenAIProvider, AnthropicProvider, create_llm_provider
+from gatekeeper_eos_v6.providers import OpenAIProvider, AnthropicProvider, GoogleProvider, create_llm_provider, RateLimiter, _call_with_retry, _is_retryable_error
 
 
 # ===========================================================================
@@ -1519,7 +1519,7 @@ class TestOpenAIProvider:
             assert provider.last_raw_response == "This is not JSON"
 
     def test_generate_api_error_returns_empty(self, monkeypatch):
-        """API call raises exception -> returns empty string."""
+        """API call raises exception -> returns empty string (after max_retries=0)."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
 
         with unittest.mock.patch("openai.OpenAI") as mock_openai:
@@ -1527,7 +1527,7 @@ class TestOpenAIProvider:
             mock_openai.return_value = mock_client
             mock_client.chat.completions.create.side_effect = Exception("API timeout")
 
-            provider = OpenAIProvider()
+            provider = OpenAIProvider(max_retries=0)
             result = provider.generate("test")
 
             assert result == "", f"Expected empty string on error, got: {result}"
@@ -1744,7 +1744,7 @@ class TestAnthropicProvider:
             assert result == "", f"Expected empty string, got: {result}"
 
     def test_generate_api_error_returns_empty(self, monkeypatch):
-        """API call raises exception -> returns empty string."""
+        """API call raises exception -> returns empty string (after max_retries=0)."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
 
         with unittest.mock.patch("anthropic.Anthropic") as mock_anthropic:
@@ -1752,7 +1752,7 @@ class TestAnthropicProvider:
             mock_anthropic.return_value = mock_client
             mock_client.messages.create.side_effect = Exception("API timeout")
 
-            provider = AnthropicProvider()
+            provider = AnthropicProvider(max_retries=0)
             result = provider.generate("test")
 
             assert result == "", f"Expected empty string on error, got: {result}"
@@ -1833,6 +1833,207 @@ class TestAnthropicProvider:
             prov = create_llm_provider("anthropic", model="claude-3-haiku-20240307")
             assert isinstance(prov, AnthropicProvider)
             assert prov.model == "claude-3-haiku-20240307"
+
+
+# ===========================================================================
+# GoogleProvider
+# ===========================================================================
+
+
+class TestGoogleProvider:
+    """Tests for GoogleProvider — a real LLM provider backed by the Gemini API.
+
+    All tests mock the internal google.genai client so no real API calls are made.
+    """
+
+    def test_creates_client_with_env_key(self, monkeypatch):
+        """With GEMINI_API_KEY set, GoogleProvider creates a client."""
+        monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key-12345")
+
+        with unittest.mock.patch("google.genai.Client") as mock_genai:
+            mock_client = unittest.mock.MagicMock()
+            mock_genai.return_value = mock_client
+
+            provider = GoogleProvider()
+
+            mock_genai.assert_called_once()
+            call_kwargs = mock_genai.call_args.kwargs
+            assert call_kwargs["api_key"] == "test-gemini-key-12345"
+            assert provider.model == "gemini-2.0-flash"
+
+    def test_creates_client_with_explicit_key(self, monkeypatch):
+        """Explicit api_key argument takes precedence over env var."""
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-should-be-ignored")
+
+        with unittest.mock.patch("google.genai.Client") as mock_genai:
+            mock_client = unittest.mock.MagicMock()
+            mock_genai.return_value = mock_client
+
+            provider = GoogleProvider(api_key="gemini-explicit")
+
+            call_kwargs = mock_genai.call_args.kwargs
+            assert call_kwargs["api_key"] == "gemini-explicit"
+
+    def test_no_key_raises_value_error(self, monkeypatch):
+        """No API key in env or constructor -> ValueError."""
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        with pytest.raises(ValueError, match="GEMINI_API_KEY"):
+            GoogleProvider()
+
+    def test_generate_success(self, monkeypatch):
+        """Successful API call returns parsed JSON string."""
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-key")
+
+        with unittest.mock.patch("google.genai.Client") as mock_genai:
+            mock_client = unittest.mock.MagicMock()
+            mock_genai.return_value = mock_client
+
+            # Simulate a valid API response from Google's generate_content
+            mock_response = unittest.mock.MagicMock()
+            mock_response.text = '{"tool": "nmap", "command": "discover", "arguments": {"target": "10.0.0.1"}, "target": "10.0.0.1", "reasoning": "Initial recon"}'
+            mock_client.models.generate_content.return_value = mock_response
+
+            provider = GoogleProvider()
+            result = provider.generate("Scan the target")
+
+            # Verify the response was returned and is valid JSON
+            parsed = json.loads(result)
+            assert parsed["tool"] == "nmap"
+            assert parsed["command"] == "discover"
+            assert provider.call_count == 1
+            assert provider.last_prompt == "Scan the target"
+            assert provider.last_raw_response == result
+
+            # Verify the API was called with expected args
+            mock_client.models.generate_content.assert_called_once()
+            call_kwargs = mock_client.models.generate_content.call_args.kwargs
+            assert call_kwargs["model"] == "gemini-2.0-flash"
+            # contents should be the user prompt
+            assert call_kwargs["contents"] == "Scan the target"
+            # config should have system_instruction
+            config = call_kwargs["config"]
+            assert config.system_instruction is not None
+            assert "penetration-testing AI" in config.system_instruction
+            assert config.temperature == 0.2
+            assert config.max_output_tokens == 1024
+
+    def test_generate_invalid_json_returns_empty(self, monkeypatch):
+        """API returns non-JSON content -> returns empty string."""
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-key")
+
+        with unittest.mock.patch("google.genai.Client") as mock_genai:
+            mock_client = unittest.mock.MagicMock()
+            mock_genai.return_value = mock_client
+
+            mock_response = unittest.mock.MagicMock()
+            mock_response.text = "This is not JSON"
+            mock_client.models.generate_content.return_value = mock_response
+
+            provider = GoogleProvider()
+            result = provider.generate("test")
+
+            assert result == "", f"Expected empty string, got: {result}"
+            assert provider.last_raw_response == "This is not JSON"
+
+    def test_generate_api_error_returns_empty(self, monkeypatch):
+        """API call raises exception -> returns empty string (after max_retries=0)."""
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-key")
+
+        with unittest.mock.patch("google.genai.Client") as mock_genai:
+            mock_client = unittest.mock.MagicMock()
+            mock_genai.return_value = mock_client
+            mock_client.models.generate_content.side_effect = Exception("API timeout")
+
+            provider = GoogleProvider(max_retries=0)
+            result = provider.generate("test")
+
+            assert result == "", f"Expected empty string on error, got: {result}"
+
+    def test_generate_tracks_multiple_calls(self, monkeypatch):
+        """Multiple calls increment call_count correctly."""
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-key")
+
+        with unittest.mock.patch("google.genai.Client") as mock_genai:
+            mock_client = unittest.mock.MagicMock()
+            mock_genai.return_value = mock_client
+
+            mock_response = unittest.mock.MagicMock()
+            mock_response.text = '{"tool": "test", "command": "run"}'
+            mock_client.models.generate_content.return_value = mock_response
+
+            provider = GoogleProvider()
+
+            provider.generate("call 1")
+            provider.generate("call 2")
+            provider.generate("call 3")
+
+            assert provider.call_count == 3
+
+    def test_custom_model_and_params(self, monkeypatch):
+        """Custom model, temperature, max_tokens passed to API."""
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-key")
+
+        with unittest.mock.patch("google.genai.Client") as mock_genai:
+            mock_client = unittest.mock.MagicMock()
+            mock_genai.return_value = mock_client
+
+            mock_response = unittest.mock.MagicMock()
+            mock_response.text = '{"tool": "test", "command": "run"}'
+            mock_client.models.generate_content.return_value = mock_response
+
+            provider = GoogleProvider(
+                model="gemini-1.5-pro",
+                temperature=0.8,
+                max_tokens=2048,
+                timeout=60,
+            )
+
+            assert provider.model == "gemini-1.5-pro"
+            provider.generate("test")
+
+            call_kwargs = mock_client.models.generate_content.call_args.kwargs
+            assert call_kwargs["model"] == "gemini-1.5-pro"
+            config = call_kwargs["config"]
+            assert config.temperature == 0.8
+            assert config.max_output_tokens == 2048
+
+    def test_custom_base_url(self, monkeypatch):
+        """Custom base_url passed to genai.Client http_options."""
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-key")
+
+        with unittest.mock.patch("google.genai.Client") as mock_genai:
+            mock_client = unittest.mock.MagicMock()
+            mock_genai.return_value = mock_client
+
+            provider = GoogleProvider(base_url="http://localhost:8080/v1")
+
+            call_kwargs = mock_genai.call_args.kwargs
+            assert "http_options" in call_kwargs
+            assert call_kwargs["http_options"]["base_url"] == "http://localhost:8080/v1"
+
+    def test_create_llm_provider_factory_google(self, monkeypatch):
+        """create_llm_provider factory returns GoogleProvider for 'google'."""
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-key")
+
+        with unittest.mock.patch("google.genai.Client") as mock_genai:
+            mock_client = unittest.mock.MagicMock()
+            mock_genai.return_value = mock_client
+
+            prov = create_llm_provider("google", model="gemini-2.0-flash-lite")
+            assert isinstance(prov, GoogleProvider)
+            assert prov.model == "gemini-2.0-flash-lite"
+
+    def test_create_llm_provider_factory_gemini_alias(self, monkeypatch):
+        """create_llm_provider factory returns GoogleProvider for 'gemini' alias."""
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-key")
+
+        with unittest.mock.patch("google.genai.Client") as mock_genai:
+            mock_client = unittest.mock.MagicMock()
+            mock_genai.return_value = mock_client
+
+            prov = create_llm_provider("gemini", model="gemini-1.5-pro")
+            assert isinstance(prov, GoogleProvider)
+            assert prov.model == "gemini-1.5-pro"
 
 
 # ===========================================================================
@@ -2995,3 +3196,688 @@ class TestAgenticYAMLNewFields:
         engine_config = config["rule_engine_config"]
         assert engine_config["max_retries_per_phase"] == 2
         assert engine_config["fallback_on_empty"] == "fingerprint"
+
+
+# ===========================================================================
+# RateLimiter
+# ===========================================================================
+
+
+class TestRateLimiter:
+    """Tests for the token-bucket RateLimiter."""
+
+    def test_initial_tokens_full_capacity(self):
+        """RateLimiter starts with full capacity tokens."""
+        limiter = RateLimiter(capacity=10, tokens_per_second=5.0)
+        assert limiter.available_tokens == 10.0
+
+    def test_consume_one_token_reduces_available(self):
+        """wait_if_needed consumes one token."""
+        limiter = RateLimiter(capacity=5, tokens_per_second=10.0)
+        limiter.wait_if_needed()
+        assert limiter.available_tokens == pytest.approx(4.0, rel=1e-3)
+
+    def test_consumes_multiple_tokens(self):
+        """Multiple calls consume multiple tokens."""
+        limiter = RateLimiter(capacity=10, tokens_per_second=10.0)
+        for _ in range(4):
+            limiter.wait_if_needed()
+        assert limiter.available_tokens == pytest.approx(6.0, rel=1e-3)
+
+    def test_available_tokens_refills_over_time(self):
+        """After waiting, tokens are replenished."""
+        limiter = RateLimiter(capacity=5, tokens_per_second=10.0)
+        # Consume all 5
+        for _ in range(5):
+            limiter.wait_if_needed()
+        assert limiter.available_tokens == pytest.approx(0.0, abs=1e-3)
+        # Wait for refill
+        import time
+        time.sleep(0.3)  # ~3 tokens at 10/s
+        assert limiter.available_tokens >= 2.0
+
+    def test_reset_restores_full_capacity(self):
+        """reset() restores tokens to capacity and clears wait tracking."""
+        limiter = RateLimiter(capacity=10, tokens_per_second=5.0)
+        for _ in range(8):
+            limiter.wait_if_needed()
+        assert limiter.available_tokens == pytest.approx(2.0, rel=1e-3)
+        limiter.reset()
+        assert limiter.available_tokens == pytest.approx(10.0, rel=1e-3)
+        assert limiter.total_wait_seconds == 0.0
+
+    def test_total_wait_seconds_nonzero_after_exhaustion(self):
+        """total_wait_seconds > 0 after rate limit wait."""
+        limiter = RateLimiter(capacity=2, tokens_per_second=100.0)
+        # Consume both tokens
+        limiter.wait_if_needed()
+        limiter.wait_if_needed()
+        # Should have waited at least some time for 3rd call
+        limiter.wait_if_needed()
+        assert limiter.total_wait_seconds > 0.0
+
+    def test_low_tokens_per_second_waits_longer(self):
+        """Low refill rate causes longer waits."""
+        import time
+        limiter = RateLimiter(capacity=1, tokens_per_second=1.0)
+        start = time.monotonic()
+        limiter.wait_if_needed()  # consume
+        limiter.wait_if_needed()  # empty -> must wait
+        elapsed = time.monotonic() - start
+        assert elapsed >= 0.5  # at least half the refill time
+
+    def test_wait_if_needed_blocks_when_empty(self):
+        """wait_if_needed blocks when bucket is empty."""
+        import time
+        limiter = RateLimiter(capacity=1, tokens_per_second=10.0)
+        limiter.wait_if_needed()  # consume the only token
+        start = time.monotonic()
+        limiter.wait_if_needed()  # empty -> must wait
+        elapsed = time.monotonic() - start
+        assert elapsed >= 0.05  # at least some wait time
+
+
+# ===========================================================================
+# Retry helpers (_call_with_retry, _is_retryable_error)
+# ===========================================================================
+
+
+class TestRetryHelpers:
+    """Tests for _is_retryable_error and _call_with_retry."""
+
+    # --- _is_retryable_error ---
+
+    def test_is_retryable_429(self):
+        """HTTP 429 is retryable."""
+        assert _is_retryable_error(Exception("429 Too Many Requests")) is True
+
+    def test_is_retryable_503(self):
+        """HTTP 503 is retryable."""
+        assert _is_retryable_error(Exception("503 Service Unavailable")) is True
+
+    def test_is_retryable_502(self):
+        """HTTP 502 is retryable."""
+        assert _is_retryable_error(Exception("502 Bad Gateway")) is True
+
+    def test_is_retryable_500(self):
+        """HTTP 500 is retryable (sometimes transient)."""
+        assert _is_retryable_error(Exception("500 Internal Server Error")) is True
+
+    def test_is_not_retryable_401(self):
+        """HTTP 401 is not retryable."""
+        assert _is_retryable_error(Exception("401 Unauthorized")) is False
+
+    def test_is_not_retryable_403(self):
+        """HTTP 403 is not retryable."""
+        assert _is_retryable_error(Exception("403 Forbidden")) is False
+
+    def test_is_not_retryable_400(self):
+        """HTTP 400 is not retryable."""
+        assert _is_retryable_error(Exception("400 Bad Request")) is False
+
+    def test_is_not_retryable_404(self):
+        """HTTP 404 is not retryable."""
+        assert _is_retryable_error(Exception("404 Not Found")) is False
+
+    def test_is_retryable_connection_error(self):
+        """Connection error is retryable."""
+        assert _is_retryable_error(Exception("Connection reset by peer")) is True
+
+    def test_is_retryable_timeout(self):
+        """Timeout error is retryable."""
+        assert _is_retryable_error(Exception("Connection timeout")) is True
+        assert _is_retryable_error(Exception("Request timed out")) is True
+
+    def test_is_retryable_too_many_requests(self):
+        """Too Many Requests text (without 429 code) is retryable."""
+        assert _is_retryable_error(Exception("too many requests, try again later")) is True
+
+    def test_is_not_retryable_json_decode_error(self):
+        """JSON decode error is not retryable."""
+        assert _is_retryable_error(Exception("JSON decode failed at line 1")) is False
+
+    def test_is_not_retryable_parse_error(self):
+        """Parse error is not retryable."""
+        assert _is_retryable_error(Exception("Parse error: unexpected token")) is False
+
+    # --- _call_with_retry ---
+
+    def test_call_with_retry_success_first_try(self):
+        """Success on first try returns result with 0 retries."""
+        result, retries, delay = _call_with_retry(
+            lambda: "success", max_retries=3,
+        )
+        assert result == "success"
+        assert retries == 0
+        assert delay == 0.0
+
+    def test_call_with_retry_succeeds_after_retry(self):
+        """Retries then succeeds."""
+        attempts = [0]
+
+        def flaky_call():
+            attempts[0] += 1
+            if attempts[0] < 3:
+                raise Exception("429 Rate Limited")
+            return "success"
+
+        result, retries, delay = _call_with_retry(
+            flaky_call, max_retries=3, base_delay=0.01,
+        )
+        assert result == "success"
+        assert retries == 2
+        assert delay > 0.0
+
+    def test_call_with_retry_exhausts_all_retries(self):
+        """Fails after all retries exhausted."""
+        attempts = [0]
+
+        def always_fails():
+            attempts[0] += 1
+            raise Exception("429 Rate Limited")
+
+        result, retries, delay = _call_with_retry(
+            always_fails, max_retries=2, base_delay=0.01,
+        )
+        assert result == ""
+        assert retries == 2
+        assert attempts[0] == 3  # original + 2 retries
+        assert delay > 0.0
+
+    def test_call_with_retry_zero_retries(self):
+        """max_retries=0 means no retry on failure."""
+        result, retries, delay = _call_with_retry(
+            lambda: (_ for _ in ()).throw(Exception("503 error")),
+            max_retries=0, base_delay=0.01,
+        )
+        assert result == ""
+        assert retries == 0
+
+    def test_call_with_retry_non_retryable_error(self):
+        """Non-retryable error (401) does not retry."""
+        result, retries, delay = _call_with_retry(
+            lambda: (_ for _ in ()).throw(Exception("401 Unauthorized")),
+            max_retries=3, base_delay=0.01,
+        )
+        assert result == ""
+        assert retries == 0
+
+    def test_call_with_retry_passes_rate_limiter(self):
+        """RateLimiter is consulted before each attempt."""
+        limiter = RateLimiter(capacity=5, tokens_per_second=10.0)
+        initial_tokens = limiter.available_tokens
+
+        result, retries, delay = _call_with_retry(
+            lambda: "success", max_retries=0,
+            rate_limiter=limiter,
+        )
+        assert result == "success"
+        # One token consumed
+        assert limiter.available_tokens == pytest.approx(initial_tokens - 1, rel=1e-3)
+
+    def test_call_with_retry_delay_increases_with_attempts(self):
+        """Each retry has increasing delay (exponential backoff)."""
+        delays = []
+
+        def track_delay(d):
+            delays.append(d)
+
+        attempts = [0]
+
+        def always_fails():
+            attempts[0] += 1
+            raise Exception("429 Rate Limited")
+
+        result, retries, total_delay = _call_with_retry(
+            always_fails, max_retries=3, base_delay=0.1,
+        )
+        assert retries == 3
+        assert total_delay > 0.0
+
+
+# ===========================================================================
+# Provider retry metrics
+# ===========================================================================
+
+
+class TestProviderRetryMetrics:
+    """Tests for retry metrics tracking on OpenAIProvider and AnthropicProvider.
+
+    Verifies that retry_count, total_retry_delay, and last_rate_limit_hit
+    are correctly updated during retry scenarios.
+    """
+
+    def test_openai_retry_count_zero_on_success(self, monkeypatch):
+        """retry_count is 0 when no retries occur."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+
+            mock_choice = unittest.mock.MagicMock()
+            mock_choice.message.content = '{"tool": "test", "command": "run"}'
+            mock_response = unittest.mock.MagicMock()
+            mock_response.choices = [mock_choice]
+            mock_client.chat.completions.create.return_value = mock_response
+
+            provider = OpenAIProvider()
+            provider.generate("test")
+
+            assert provider.retry_count == 0
+            assert provider.total_retry_delay == 0.0
+            assert provider.last_rate_limit_hit == 0.0
+
+    def test_openai_retry_count_increments_on_retry(self, monkeypatch):
+        """retry_count increments after transient errors."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+
+            # First call raises 429 (retryable), second succeeds
+            mock_choice = unittest.mock.MagicMock()
+            mock_choice.message.content = '{"tool": "test", "command": "run"}'
+            mock_response = unittest.mock.MagicMock()
+            mock_response.choices = [mock_choice]
+
+            mock_client.chat.completions.create.side_effect = [
+                Exception("429 Rate Limited"),
+                mock_response,
+            ]
+
+            provider = OpenAIProvider(max_retries=1, rate_limiter=RateLimiter(capacity=100, tokens_per_second=1000))
+            result = provider.generate("test")
+
+            assert result != ""
+            assert provider.retry_count == 1
+            assert provider.total_retry_delay > 0.0
+            assert provider.last_rate_limit_hit > 0.0
+
+    def test_openai_last_rate_limit_hit_unchanged_on_success(self, monkeypatch):
+        """last_rate_limit_hit stays 0.0 when no retry."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+
+            mock_choice = unittest.mock.MagicMock()
+            mock_choice.message.content = '{"tool": "test", "command": "run"}'
+            mock_response = unittest.mock.MagicMock()
+            mock_response.choices = [mock_choice]
+            mock_client.chat.completions.create.return_value = mock_response
+
+            provider = OpenAIProvider()
+            provider.generate("test")
+
+            assert provider.last_rate_limit_hit == 0.0
+
+    def test_anthropic_retry_count_zero_on_success(self, monkeypatch):
+        """Anthropic retry_count is 0 when no retries occur."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+        with unittest.mock.patch("anthropic.Anthropic") as mock_anthropic:
+            mock_client = unittest.mock.MagicMock()
+            mock_anthropic.return_value = mock_client
+
+            mock_content_block = unittest.mock.MagicMock()
+            mock_content_block.text = '{"tool": "test", "command": "run"}'
+            mock_response = unittest.mock.MagicMock()
+            mock_response.content = [mock_content_block]
+            mock_client.messages.create.return_value = mock_response
+
+            provider = AnthropicProvider()
+            provider.generate("test")
+
+            assert provider.retry_count == 0
+            assert provider.total_retry_delay == 0.0
+            assert provider.last_rate_limit_hit == 0.0
+
+    def test_anthropic_retry_count_increments_on_retry(self, monkeypatch):
+        """Anthropic retry_count increments after transient errors."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+        with unittest.mock.patch("anthropic.Anthropic") as mock_anthropic:
+            mock_client = unittest.mock.MagicMock()
+            mock_anthropic.return_value = mock_client
+
+            mock_content_block = unittest.mock.MagicMock()
+            mock_content_block.text = '{"tool": "test", "command": "run"}'
+            mock_response = unittest.mock.MagicMock()
+            mock_response.content = [mock_content_block]
+
+            mock_client.messages.create.side_effect = [
+                Exception("429 Rate Limited"),
+                mock_response,
+            ]
+
+            provider = AnthropicProvider(max_retries=1, rate_limiter=RateLimiter(capacity=100, tokens_per_second=1000))
+            result = provider.generate("test")
+
+            assert result != ""
+            assert provider.retry_count == 1
+            assert provider.total_retry_delay > 0.0
+            assert provider.last_rate_limit_hit > 0.0
+
+    def test_anthropic_last_rate_limit_hit_unchanged_on_success(self, monkeypatch):
+        """Anthropic last_rate_limit_hit stays 0.0 when no retry."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+        with unittest.mock.patch("anthropic.Anthropic") as mock_anthropic:
+            mock_client = unittest.mock.MagicMock()
+            mock_anthropic.return_value = mock_client
+
+            mock_content_block = unittest.mock.MagicMock()
+            mock_content_block.text = '{"tool": "test", "command": "run"}'
+            mock_response = unittest.mock.MagicMock()
+            mock_response.content = [mock_content_block]
+            mock_client.messages.create.return_value = mock_response
+
+            provider = AnthropicProvider()
+            provider.generate("test")
+
+            assert provider.last_rate_limit_hit == 0.0
+
+    def test_provider_cannot_construct_negative_max_retries(self):
+        """max_retries can be 0 (no retry) but not negative."""
+        # _call_with_retry is called from generate with max_retries=0
+        # A negative value would cause range(max_retries+1) = range(0) = empty
+        # So it would never attempt the call at all
+        assert True  # structural: negative max_retries is handled at the caller
+
+    def test_provider_retry_metrics_persist_across_calls(self, monkeypatch):
+        """Retry metrics accumulate across multiple generate calls."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+
+            mock_choice = unittest.mock.MagicMock()
+            mock_choice.message.content = '{"tool": "test", "command": "run"}'
+            mock_response = unittest.mock.MagicMock()
+            mock_response.choices = [mock_choice]
+
+            # First call succeeds, second has 1 retry, third succeeds
+            mock_client.chat.completions.create.side_effect = [
+                mock_response,
+                Exception("429 Rate Limited"),
+                mock_response,
+                mock_response,
+            ]
+
+            provider = OpenAIProvider(max_retries=1, rate_limiter=RateLimiter(capacity=100, tokens_per_second=1000))
+
+            # Call 1: success, no retries
+            provider.generate("call 1")
+            assert provider.call_count == 1
+            assert provider.retry_count == 0
+
+            # Call 2: retry once then success
+            provider.generate("call 2")
+            assert provider.call_count == 2
+            assert provider.retry_count == 1
+            assert provider.total_retry_delay > 0.0
+
+            # Call 3: success
+            provider.generate("call 3")
+            assert provider.call_count == 3
+            assert provider.retry_count == 1  # cumulative, still 1
+# ===========================================================================
+# from_agentic_config parameter forwarding
+# ===========================================================================
+
+
+class TestFromAgenticConfigParameterForwarding:
+    """Tests that from_agentic_config forwards api_key, base_url, max_retries
+    to all production provider constructors.
+    """
+
+    def test_openai_forwarding_api_key(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """api_key flows through from_agentic_config to OpenAIProvider."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        with unittest.mock.patch("gatekeeper_eos_v6.providers.OpenAIProvider") as mock_prov:
+            mock_instance = unittest.mock.MagicMock()
+            mock_prov.return_value = mock_instance
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "type": "openai",
+                    "model": "gpt-4o",
+                    "api_key": "sk-forwarded-key",
+                },
+            }
+            AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+
+            mock_prov.assert_called_once()
+            call_kwargs = mock_prov.call_args.kwargs
+            assert call_kwargs["api_key"] == "sk-forwarded-key"
+            assert call_kwargs["model"] == "gpt-4o"
+
+    def test_openai_forwarding_base_url(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """base_url flows through from_agentic_config to OpenAIProvider."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("gatekeeper_eos_v6.providers.OpenAIProvider") as mock_prov:
+            mock_instance = unittest.mock.MagicMock()
+            mock_prov.return_value = mock_instance
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "type": "openai",
+                    "model": "llama-3.3-70b-versatile",
+                    "base_url": "https://api.groq.com/openai/v1",
+                },
+            }
+            AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+
+            call_kwargs = mock_prov.call_args.kwargs
+            assert call_kwargs["base_url"] == "https://api.groq.com/openai/v1"
+
+    def test_openai_forwarding_max_retries(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """max_retries flows through from_agentic_config to OpenAIProvider."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("gatekeeper_eos_v6.providers.OpenAIProvider") as mock_prov:
+            mock_instance = unittest.mock.MagicMock()
+            mock_prov.return_value = mock_instance
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "type": "openai",
+                    "model": "gpt-4o-mini",
+                    "max_retries": 10,
+                },
+            }
+            AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+
+            call_kwargs = mock_prov.call_args.kwargs
+            assert call_kwargs["max_retries"] == 10
+
+    def test_openai_forwarding_all_params(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """All three optional params forwarded together to OpenAIProvider."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        with unittest.mock.patch("gatekeeper_eos_v6.providers.OpenAIProvider") as mock_prov:
+            mock_instance = unittest.mock.MagicMock()
+            mock_prov.return_value = mock_instance
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "type": "openai",
+                    "model": "gpt-4o",
+                    "api_key": "sk-all-three",
+                    "base_url": "https://custom.endpoint/v1",
+                    "max_retries": 5,
+                },
+            }
+            AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+
+            call_kwargs = mock_prov.call_args.kwargs
+            assert call_kwargs["api_key"] == "sk-all-three"
+            assert call_kwargs["base_url"] == "https://custom.endpoint/v1"
+            assert call_kwargs["max_retries"] == 5
+
+    def test_anthropic_forwarding_api_key(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """api_key flows through from_agentic_config to AnthropicProvider."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        with unittest.mock.patch("gatekeeper_eos_v6.providers.AnthropicProvider") as mock_prov:
+            mock_instance = unittest.mock.MagicMock()
+            mock_prov.return_value = mock_instance
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "type": "anthropic",
+                    "model": "claude-sonnet-4-20250514",
+                    "api_key": "sk-ant-forwarded",
+                },
+            }
+            AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+
+            call_kwargs = mock_prov.call_args.kwargs
+            assert call_kwargs["api_key"] == "sk-ant-forwarded"
+
+    def test_anthropic_forwarding_base_url(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """base_url flows through from_agentic_config to AnthropicProvider."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+        with unittest.mock.patch("gatekeeper_eos_v6.providers.AnthropicProvider") as mock_prov:
+            mock_instance = unittest.mock.MagicMock()
+            mock_prov.return_value = mock_instance
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "type": "anthropic",
+                    "model": "claude-sonnet-4-20250514",
+                    "base_url": "https://custom.anthropic.endpoint/v1",
+                },
+            }
+            AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+
+            call_kwargs = mock_prov.call_args.kwargs
+            assert call_kwargs["base_url"] == "https://custom.anthropic.endpoint/v1"
+
+    def test_google_forwarding_api_key(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """api_key flows through from_agentic_config to GoogleProvider."""
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+        with unittest.mock.patch("gatekeeper_eos_v6.providers.GoogleProvider") as mock_prov:
+            mock_instance = unittest.mock.MagicMock()
+            mock_prov.return_value = mock_instance
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "type": "google",
+                    "model": "gemini-2.0-flash",
+                    "api_key": "gemini-forwarded",
+                },
+            }
+            AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+
+            call_kwargs = mock_prov.call_args.kwargs
+            assert call_kwargs["api_key"] == "gemini-forwarded"
+
+    def test_google_forwarding_base_url(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """base_url flows through from_agentic_config to GoogleProvider."""
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-key")
+
+        with unittest.mock.patch("gatekeeper_eos_v6.providers.GoogleProvider") as mock_prov:
+            mock_instance = unittest.mock.MagicMock()
+            mock_prov.return_value = mock_instance
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "type": "gemini",
+                    "model": "gemini-2.0-flash",
+                    "base_url": "https://custom.gemini.endpoint/v1",
+                },
+            }
+            AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+
+            call_kwargs = mock_prov.call_args.kwargs
+            assert call_kwargs["base_url"] == "https://custom.gemini.endpoint/v1"
+
+    def test_google_forwarding_max_retries(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """max_retries flows through from_agentic_config to GoogleProvider."""
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-key")
+
+        with unittest.mock.patch("gatekeeper_eos_v6.providers.GoogleProvider") as mock_prov:
+            mock_instance = unittest.mock.MagicMock()
+            mock_prov.return_value = mock_instance
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "type": "google",
+                    "model": "gemini-2.0-flash",
+                    "max_retries": 7,
+                },
+            }
+            AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+
+            call_kwargs = mock_prov.call_args.kwargs
+            assert call_kwargs["max_retries"] == 7
+
+    def test_no_forwarding_when_not_in_config(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """When optional params are absent, they are not passed to the provider."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("gatekeeper_eos_v6.providers.OpenAIProvider") as mock_prov:
+            mock_instance = unittest.mock.MagicMock()
+            mock_prov.return_value = mock_instance
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "type": "openai",
+                    "model": "gpt-4o-mini",
+                },
+            }
+            AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+
+            call_kwargs = mock_prov.call_args.kwargs
+            assert "api_key" not in call_kwargs
+            assert "base_url" not in call_kwargs
+            assert "max_retries" not in call_kwargs

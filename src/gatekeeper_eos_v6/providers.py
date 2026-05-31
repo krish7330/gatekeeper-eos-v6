@@ -13,17 +13,218 @@ Usage
     provider = OpenAIProvider(model="gpt-4o-mini")
     response = provider.generate("... prompt ...")
     # → '{"tool": "nmap", "command": "discover", ...}'
+
+Rate limiting & retries
+───────────────────────
+Both providers support configurable rate limiting (token bucket) and
+retry with exponential backoff for transient API errors (429, 503,
+connection errors).  Use ``max_retries`` (default 3) and ``rate_limiter``
+constructor arguments to tune production behaviour.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import random
 import time
+from collections.abc import Callable
 from typing import Any
 
 # Local imports — the LLMProvider ABC lives in agentic.py
 from gatekeeper_eos_v6.agentic import LLMProvider
+
+
+# ===========================================================================
+# Rate limiter — token bucket
+# ===========================================================================
+
+
+class RateLimiter:
+    """Token-bucket rate limiter for LLM API calls.
+
+    Maintains a bucket of *capacity* tokens.  Every ``_call_and_retry``
+    consumes one token.  Tokens refill at *tokens_per_second* up to the
+    bucket capacity.  If the bucket is empty, the caller must wait until
+    a token is available (sleeps the required amount).
+
+    Parameters
+    ----------
+    capacity:
+        Maximum burst size — how many requests can be sent back-to-back
+        before the limiter kicks in (default 60).
+    tokens_per_second:
+        Steady-state refill rate (default 3, so ~20 RPM).  For OpenAI
+        tier-1 this is safe; for higher tiers increase to 5-10.
+    """
+
+    def __init__(self, capacity: int = 60, tokens_per_second: float = 3.0) -> None:
+        self._capacity = capacity
+        self._tokens_per_second = tokens_per_second
+        self._tokens = float(capacity)
+        self._last_refill = time.monotonic()
+        self._total_waited = 0.0
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def wait_if_needed(self) -> None:
+        """Block until a rate-limit token is available.
+
+        If the bucket has tokens, consumes one and returns immediately.
+        If empty, sleeps for the refill time of one token and then
+        consumes one.
+
+        Thread-safe for single-threaded use (the agent loop is
+        single-threaded by design).
+        """
+        self._refill()
+
+        if self._tokens >= 1.0:
+            self._tokens -= 1.0
+            return
+
+        # Bucket empty — sleep for one token's worth of time
+        sleep_for = 1.0 / self._tokens_per_second
+        time.sleep(sleep_for)
+        self._total_waited += sleep_for
+        self._tokens = 0.0  # consumed the just-refilled token
+
+    @property
+    def available_tokens(self) -> float:
+        """Number of tokens currently in the bucket (best-effort)."""
+        self._refill()
+        return self._tokens
+
+    @property
+    def total_wait_seconds(self) -> float:
+        """Cumulative seconds spent waiting for rate-limit tokens."""
+        return self._total_waited
+
+    def reset(self) -> None:
+        """Reset the bucket to full capacity and clear wait tracking."""
+        self._tokens = float(self._capacity)
+        self._last_refill = time.monotonic()
+        self._total_waited = 0.0
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _refill(self) -> None:
+        """Refill tokens based on elapsed time since last refill."""
+        now = time.monotonic()
+        elapsed = now - self._last_refill
+        gained = elapsed * self._tokens_per_second
+        self._tokens = min(self._capacity, self._tokens + gained)
+        self._last_refill = now
+
+
+# ===========================================================================
+# Retry helper — exponential backoff for transient API errors
+# ===========================================================================
+
+
+def _call_with_retry(
+    api_call: Callable[[], str],
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 60.0,
+    rate_limiter: RateLimiter | None = None,
+) -> tuple[str, int, float]:
+    """Call *api_call* with exponential backoff retry.
+
+    Retries on transient errors (429, 503, connection resets, timeouts).
+    Non-transient errors (401, 403, 400) are **not** retried.
+
+    Parameters
+    ----------
+    api_call:
+        A zero-argument callable that returns the response text string
+        on success, or raises an exception on failure.
+    max_retries:
+        Maximum number of retry attempts (default 3).
+    base_delay:
+        Initial delay in seconds before the first retry (default 1.0).
+    max_delay:
+        Maximum delay cap in seconds (default 60.0).
+    rate_limiter:
+        Optional ``RateLimiter`` to wait for a token before each call.
+
+    Returns
+    -------
+    A tuple of (response_text, total_retries, total_delay_seconds).
+    On fatal failure after all retries, returns ("", retries, delay).
+    """
+    last_error: Exception | None = None
+    total_delay = 0.0
+    retries = 0
+
+    for attempt in range(max_retries + 1):
+        # Rate-limit wait before each attempt
+        if rate_limiter is not None:
+            rate_limiter.wait_if_needed()
+
+        try:
+            result = api_call()
+            return result, retries, total_delay
+        except Exception as exc:
+            last_error = exc
+            if attempt >= max_retries:
+                break
+
+            # Determine if this is retryable
+            if not _is_retryable_error(exc):
+                break
+
+            retries += 1
+            delay = min(base_delay * (2 ** (attempt)), max_delay)
+            # Add jitter: ±25%
+            delay *= 0.75 + random.random() * 0.5
+            total_delay += delay
+            time.sleep(delay)
+
+    return "", retries, total_delay
+
+
+def _is_retryable_error(exc: Exception) -> bool:
+    """Return True if the exception represents a transient error.
+
+    Retryable: 429 (rate limit), 503 (service unavailable), 502 (bad
+    gateway), 500 (internal server error — sometimes transient),
+    connection errors, timeouts.
+
+    Non-retryable: 400, 401, 403, 404, 413, 422, JSON decode errors.
+    """
+    exc_str = str(exc).lower()
+
+    # HTTP status code checks
+    for code, retryable in [("429", True), ("503", True), ("502", True),
+                             ("500", True), ("401", False), ("403", False),
+                             ("400", False), ("404", False)]:
+        if code in exc_str:
+            return retryable
+
+    # Connection / timeout errors are always retryable
+    if any(kw in exc_str for kw in ["connection", "timeout", "timed out",
+                                     "reset", "temporarily unavailable",
+                                     "too many requests"]):
+        return True
+
+    # Non-HTTP errors (JSON decode, etc.) — not retryable
+    if any(kw in exc_str for kw in ["decode", "parse", "invalid"]):
+        return False
+
+    # Default: don't retry (safety)
+    return False
+
+
+# ===========================================================================
+# Shared default rate limiter
+# ===========================================================================
+
+_DEFAULT_RATE_LIMITER = RateLimiter(capacity=60, tokens_per_second=3.0)
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +292,8 @@ class OpenAIProvider(LLMProvider):
         max_tokens: int = 1024,
         timeout: int = 30,
         base_url: str | None = None,
+        max_retries: int = 3,
+        rate_limiter: RateLimiter | None = None,
     ) -> None:
         super().__init__(model=model)
         from openai import OpenAI
@@ -109,9 +312,14 @@ class OpenAIProvider(LLMProvider):
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._timeout = timeout
+        self._max_retries = max_retries
+        self._rate_limiter = rate_limiter or _DEFAULT_RATE_LIMITER
         self.call_count = 0
         self.last_prompt = ""
         self.last_raw_response: str = ""
+        self.retry_count = 0
+        self.total_retry_delay: float = 0.0
+        self.last_rate_limit_hit: float = 0.0
 
     # ------------------------------------------------------------------
     # Public API
@@ -120,8 +328,10 @@ class OpenAIProvider(LLMProvider):
     def generate(self, prompt: str) -> str:
         """Send *prompt* to the OpenAI model and return the response text.
 
-        Returns an empty string on any error so the caller can fall back
-        to rule-based selection (see ``_select_with_llm``).
+        Retries on transient errors (429, 503) with exponential backoff
+        up to ``self._max_retries`` attempts.  Returns an empty string
+        on ultimate failure so the caller can fall back to rule-based
+        selection (see ``_select_with_llm``).
         """
         self.call_count += 1
         self.last_prompt = prompt
@@ -131,7 +341,7 @@ class OpenAIProvider(LLMProvider):
             {"role": "user", "content": prompt},
         ]
 
-        try:
+        def _do_call() -> str:
             response = self._client.chat.completions.create(
                 model=self.model,
                 messages=messages,
@@ -150,9 +360,18 @@ class OpenAIProvider(LLMProvider):
 
             return ""
 
-        except Exception:
-            # Any error → fall back to rules
-            return ""
+        result, retries, delay = _call_with_retry(
+            _do_call,
+            max_retries=self._max_retries,
+            rate_limiter=self._rate_limiter,
+        )
+
+        self.retry_count += retries
+        self.total_retry_delay += delay
+        if retries > 0:
+            self.last_rate_limit_hit = time.time()
+
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +416,8 @@ class AnthropicProvider(LLMProvider):
         max_tokens: int = 1024,
         timeout: int = 30,
         base_url: str | None = None,
+        max_retries: int = 3,
+        rate_limiter: RateLimiter | None = None,
     ) -> None:
         super().__init__(model=model)
         from anthropic import Anthropic
@@ -215,9 +436,14 @@ class AnthropicProvider(LLMProvider):
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._timeout = timeout
+        self._max_retries = max_retries
+        self._rate_limiter = rate_limiter or _DEFAULT_RATE_LIMITER
         self.call_count = 0
         self.last_prompt = ""
         self.last_raw_response: str = ""
+        self.retry_count = 0
+        self.total_retry_delay: float = 0.0
+        self.last_rate_limit_hit: float = 0.0
 
     # ------------------------------------------------------------------
     # Public API
@@ -226,8 +452,10 @@ class AnthropicProvider(LLMProvider):
     def generate(self, prompt: str) -> str:
         """Send *prompt* to the Anthropic model and return the response text.
 
-        Returns an empty string on any error so the caller can fall back
-        to rule-based selection (see ``_select_with_llm``).
+        Retries on transient errors (429, 503) with exponential backoff
+        up to ``self._max_retries`` attempts.  Returns an empty string
+        on ultimate failure so the caller can fall back to rule-based
+        selection (see ``_select_with_llm``).
         """
         self.call_count += 1
         self.last_prompt = prompt
@@ -236,7 +464,7 @@ class AnthropicProvider(LLMProvider):
             {"role": "user", "content": prompt},
         ]
 
-        try:
+        def _do_call() -> str:
             response = self._client.messages.create(
                 model=self.model,
                 messages=messages,
@@ -256,9 +484,141 @@ class AnthropicProvider(LLMProvider):
 
             return ""
 
-        except Exception:
-            # Any error → fall back to rules
+        result, retries, delay = _call_with_retry(
+            _do_call,
+            max_retries=self._max_retries,
+            rate_limiter=self._rate_limiter,
+        )
+
+        self.retry_count += retries
+        self.total_retry_delay += delay
+        if retries > 0:
+            self.last_rate_limit_hit = time.time()
+
+        return result
+
+
+# ---------------------------------------------------------------------------
+# Google / Gemini provider
+# ---------------------------------------------------------------------------
+
+
+class GoogleProvider(LLMProvider):
+    """LLM provider backed by the Google Gemini API (``google-genai`` SDK).
+
+    Reads ``GEMINI_API_KEY`` from the environment by default but also accepts
+    an explicit *api_key* argument.
+
+    The model can be any Gemini model (``gemini-2.0-flash``, ``gemini-2.0-flash-lite``,
+    ``gemini-1.5-pro``, etc.).
+
+    For proxy/custom endpoints, pass *base_url* or set the ``GEMINI_BASE_URL``
+    environment variable.  Both flow through to ``genai.Client(http_options=...)``.
+
+    Parameters
+    ----------
+    api_key:
+        Gemini API key.  Defaults to ``GEMINI_API_KEY`` env var.
+    model:
+        Model name (default: ``gemini-2.0-flash`` — fast and capable for
+        action selection).
+    temperature:
+        Sampling temperature (default 0.2).
+    max_tokens:
+        Max output tokens in the response (default 1024).
+    timeout:
+        HTTP request timeout in seconds (default 30).
+    base_url:
+        Optional base URL for custom / compatible endpoints.
+    """
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str = "gemini-2.0-flash",
+        temperature: float = 0.2,
+        max_tokens: int = 1024,
+        timeout: int = 30,
+        base_url: str | None = None,
+        max_retries: int = 3,
+        rate_limiter: RateLimiter | None = None,
+    ) -> None:
+        super().__init__(model=model)
+        from google import genai
+
+        key = api_key or os.environ.get("GEMINI_API_KEY")
+        if not key:
+            raise ValueError(
+                "GEMINI_API_KEY not set. Export it or pass api_key= to the constructor."
+            )
+
+        http_options: dict[str, Any] = {"timeout": timeout}
+        if base_url or os.environ.get("GEMINI_BASE_URL"):
+            http_options["base_url"] = base_url or os.environ["GEMINI_BASE_URL"]
+
+        self._client = genai.Client(api_key=key, http_options=http_options)
+        self._temperature = temperature
+        self._max_tokens = max_tokens
+        self._timeout = timeout
+        self._max_retries = max_retries
+        self._rate_limiter = rate_limiter or _DEFAULT_RATE_LIMITER
+        self.call_count = 0
+        self.last_prompt = ""
+        self.last_raw_response: str = ""
+        self.retry_count = 0
+        self.total_retry_delay: float = 0.0
+        self.last_rate_limit_hit: float = 0.0
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def generate(self, prompt: str) -> str:
+        """Send *prompt* to the Gemini model and return the response text.
+
+        Retries on transient errors (429, 503) with exponential backoff
+        up to ``self._max_retries`` attempts.  Returns an empty string
+        on ultimate failure so the caller can fall back to rule-based
+        selection (see ``_select_with_llm``).
+        """
+        self.call_count += 1
+        self.last_prompt = prompt
+
+        def _do_call() -> str:
+            from google.genai import types
+
+            response = self._client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=DEFAULT_SYSTEM_PROMPT,
+                    temperature=self._temperature,
+                    max_output_tokens=self._max_tokens,
+                ),
+            )
+
+            content = response.text or ""
+            self.last_raw_response = content
+
+            # Validate it's parseable JSON before returning
+            if content.strip():
+                json.loads(content)  # validate
+                return content
+
             return ""
+
+        result, retries, delay = _call_with_retry(
+            _do_call,
+            max_retries=self._max_retries,
+            rate_limiter=self._rate_limiter,
+        )
+
+        self.retry_count += retries
+        self.total_retry_delay += delay
+        if retries > 0:
+            self.last_rate_limit_hit = time.time()
+
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -293,8 +653,10 @@ def create_llm_provider(
         return OpenAIProvider(model=model, **kwargs)
     if provider_type == "anthropic":
         return AnthropicProvider(model=model, **kwargs)
+    if provider_type in ("google", "gemini"):
+        return GoogleProvider(model=model, **kwargs)
     if provider_type in ("mock", "test"):
         from gatekeeper_eos_v6.agentic import MockLLMProvider
 
         return MockLLMProvider(model=model, default_action=kwargs.get("default_action"))
-    raise ValueError(f"Unknown provider_type: {provider_type!r}. Supported: openai, anthropic, mock")
+    raise ValueError(f"Unknown provider_type: {provider_type!r}. Supported: openai, anthropic, google, mock")
