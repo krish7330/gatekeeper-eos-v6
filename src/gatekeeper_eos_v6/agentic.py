@@ -280,6 +280,7 @@ class StopReason(Enum):
     HUMAN_IN_THE_LOOP = "human_in_the_loop"
     NO_MORE_ACTIONS = "no_more_productive_actions"
     MAX_SEVERITY_FOUND = "max_severity_found"
+    RULE_ENGINE_STALLED = "rule_engine_stalled"
 
 
 class StopConditionType(Enum):
@@ -503,6 +504,22 @@ class ActionSelector:
     ) -> None:
         self.strategy = decision_strategy
         self.llm_prompt = llm_prompt
+        self._last_rule_action: AgentAction | None = None
+        self._stall_count: int = 0
+        self._stall_threshold: int = 3  # consecutive identical actions before stall
+        # State stagnation tracking
+        self._state_snapshot: str = ""  # JSON fingerprint of last seen state
+        self._stagnation_count: int = 0
+        self._stagnation_threshold: int = 3
+
+    def _state_fingerprint(self, state: WorldState) -> str:
+        """Produce a deterministic fingerprint of state progress fields."""
+        return json.dumps({
+            "n_ports": len(state.open_ports),
+            "n_services": len(state.services),
+            "n_vulns": len(state.vulnerabilities),
+            "n_assets": len(state.discovered_assets),
+        }, sort_keys=True)
 
     def select_action(
         self,
@@ -526,13 +543,67 @@ class ActionSelector:
         Returns:
             An AgentAction bounded by allowed_tools and authorized_assets.
         """
+        if self.strategy == "hybrid":
+            # Try rules first
+            action = self._select_with_rules(state, allowed_tools, authorized_assets, step)
+
+            # Detect stall: tool-loop, asset exhaustion, or state stagnation
+            stall_reason = self._check_stalled(action, state, authorized_assets)
+            if stall_reason:
+                if self.llm_prompt:
+                    # Fall back to LLM
+                    llm_action = self._select_with_llm(
+                        state, allowed_tools, authorized_assets, objective, step, previous_actions
+                    )
+                    # If LLM also produces the same stalled action, the agent is truly stuck
+                    if (
+                        llm_action.tool == action.tool
+                        and llm_action.command == action.command
+                    ):
+                        self._reset_stall()
+                        return AgentAction(
+                            tool=action.tool,
+                            command=action.command,
+                            arguments=action.arguments,
+                            target=action.target,
+                            reasoning=(
+                                f"RULE_ENGINE_STALLED: {stall_reason}. "
+                                f"LLM fallback also returned the same action."
+                            ),
+                        )
+                    # LLM produced a different action — reset stall tracking and return it
+                    self._reset_stall()
+                    return llm_action
+                else:
+                    # No LLM configured — mark the action as stalled
+                    return AgentAction(
+                        tool=action.tool,
+                        command=action.command,
+                        arguments=action.arguments,
+                        target=action.target,
+                        reasoning=(
+                            f"RULE_ENGINE_STALLED: {stall_reason}. "
+                            f"No LLM fallback configured."
+                        ),
+                    )
+
+            return action
+
         if self.strategy == "llm":
             return self._select_with_llm(
                 state, allowed_tools, authorized_assets, objective, step, previous_actions
             )
+
         return self._select_with_rules(
             state, allowed_tools, authorized_assets, step
         )
+
+    def _reset_stall(self) -> None:
+        """Reset all stall tracking counters."""
+        self._stall_count = 0
+        self._last_rule_action = None
+        self._stagnation_count = 0
+        self._state_snapshot = ""
 
     def _select_with_rules(
         self,
@@ -548,6 +619,9 @@ class ActionSelector:
           2. If open ports but no services → run service scan
           3. If services discovered → run vulnerability check
           4. If all done → report findings
+
+        Always targets the first authorized asset — multi-asset campaigns use the
+        hybrid strategy for target rotation.
         """
         target = authorized_assets[0] if authorized_assets else "target"
 
@@ -624,6 +698,125 @@ class ActionSelector:
         # For now, the LLM simulation uses rule-based fallback so the
         # orchestrator works without an actual LLM API.
         return self._select_with_rules(state, allowed_tools, authorized_assets, step)
+
+    def _check_stalled(
+        self,
+        action: AgentAction,
+        state: WorldState,
+        authorized_assets: list[str],
+    ) -> str | None:
+        """Check if the rule engine is stalling and return the stall reason.
+
+        Three stall conditions are checked:
+          1. Tool-loop stall: same tool+command for _stall_threshold consecutive calls.
+          2. Asset-exhaustion stall: all authorized assets have been discovered but
+             the selector keeps targeting the first one (no rotation).
+          3. State-stagnation stall: no new state fields (ports, services, vulns,
+             assets) have grown for _stagnation_threshold consecutive calls.
+
+        Args:
+            action: The action just produced by _select_with_rules.
+            state: Current world model.
+            authorized_assets: All assets the agent is permitted to analyze.
+
+        Returns:
+            Stall reason string if stalled, None if the engine is making progress.
+        """
+        # --- 1. Tool-loop stall ---
+        tool_loop = self._check_tool_loop(action)
+        if tool_loop:
+            return tool_loop
+
+        # --- 2. Asset-exhaustion stall ---
+        asset_stall = self._check_asset_exhaustion(state, authorized_assets)
+        if asset_stall:
+            return asset_stall
+
+        # --- 3. State-stagnation stall ---
+        stagnation = self._check_state_stagnation(state)
+        if stagnation:
+            return stagnation
+
+        return None
+
+    def _check_tool_loop(self, action: AgentAction) -> str | None:
+        """Detect tool-loop stall: same tool+command repeated."""
+        if self._last_rule_action is None:
+            self._last_rule_action = action
+            self._stall_count = 0
+            return None
+
+        same = (
+            action.tool == self._last_rule_action.tool
+            and action.command == self._last_rule_action.command
+        )
+
+        if same:
+            self._stall_count += 1
+            if self._stall_count >= self._stall_threshold:
+                return (
+                    f"Rule engine produced {self._stall_threshold}+ consecutive "
+                    f"identical actions ({action.tool}/{action.command}). "
+                    f"Tool matching may be failing."
+                )
+        else:
+            self._stall_count = 0
+
+        self._last_rule_action = action
+        return None
+
+    def _check_asset_exhaustion(
+        self,
+        state: WorldState,
+        authorized_assets: list[str],
+    ) -> str | None:
+        """Detect asset-exhaustion stall: all assets discovered but targeting same one.
+
+        Only triggers when:
+          - There is already evidence of a stall (stall_count > 0), so a clean
+            phase transition to report mode doesn't get mislabeled as failure.
+          - Multiple assets are authorized (>1)
+          - All authorized assets appear in discovered_assets
+        """
+        if self._stall_count <= 0:
+            return None
+
+        if len(authorized_assets) <= 1:
+            return None
+
+        discovered_set = set(state.discovered_assets)
+        authorized_set = set(authorized_assets)
+
+        # Only trigger if ALL authorized assets have been discovered
+        if discovered_set and discovered_set >= authorized_set:
+            return (
+                f"All {len(authorized_assets)} authorized assets have been discovered "
+                f"but rule engine keeps targeting '{authorized_assets[0]}'. "
+                f"No rotation logic available."
+            )
+        return None
+
+    def _check_state_stagnation(self, state: WorldState) -> str | None:
+        """Detect state-stagnation stall: no new state fields for threshold calls."""
+        fingerprint = self._state_fingerprint(state)
+
+        if not self._state_snapshot:
+            self._state_snapshot = fingerprint
+            self._stagnation_count = 0
+            return None
+
+        if fingerprint == self._state_snapshot:
+            self._stagnation_count += 1
+            if self._stagnation_count >= self._stagnation_threshold:
+                return (
+                    f"State has not progressed for {self._stagnation_threshold}+"
+                    f" consecutive steps. Rule engine cannot advance without new evidence."
+                )
+        else:
+            self._stagnation_count = 0
+
+        self._state_snapshot = fingerprint
+        return None
 
     @staticmethod
     def _find_tool(
@@ -935,11 +1128,15 @@ class AgentCore:
                 f"Agent is halted: {self.stop_reason.value if self.stop_reason else 'unknown'}"
             )
 
-        selector = self._action_selector or ActionSelector(
-            decision_strategy=self.decision_strategy,
-            llm_prompt=self.llm_prompt,
-        )
-        return selector.select_action(
+        # Persist the selector so stall tracking survives across calls
+        if self._action_selector is None:
+            self._action_selector = ActionSelector(
+                decision_strategy=self.decision_strategy,
+                llm_prompt=self.llm_prompt,
+            )
+        selector = self._action_selector
+
+        action = selector.select_action(
             state=self.state,
             allowed_tools=self.allowed_tools,
             authorized_assets=self.authorized_assets,
@@ -947,6 +1144,16 @@ class AgentCore:
             step=self.step + 1,  # Next step is current + 1
             previous_actions=self.previous_actions,
         )
+
+        # Check for RULE_ENGINE_STALLED in the action's reasoning
+        if "RULE_ENGINE_STALLED" in action.reasoning:
+            self.halted = True
+            self.stop_reason = StopReason.RULE_ENGINE_STALLED
+            raise AgentStopTriggered(
+                f"Stop condition met: {StopReason.RULE_ENGINE_STALLED.value}: {action.reasoning}"
+            )
+
+        return action
 
     def reset(self) -> None:
         """Reset the agent to initial state for a fresh run."""
@@ -957,6 +1164,7 @@ class AgentCore:
         self.start_time = time.monotonic()
         self.halted = False
         self.stop_reason = None
+        self._action_selector = None  # Clear selector stall tracking
 
 
 # ---------------------------------------------------------------------------

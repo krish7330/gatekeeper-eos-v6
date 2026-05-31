@@ -1160,6 +1160,456 @@ class TestAgenticDriftIntegration:
 
 
 # ===========================================================================
+# Hybrid strategy: stall detection
+# ===========================================================================
+
+
+class TestHybridStallDetection:
+    """Tests for ActionSelector._check_stalled and its three sub-checks.
+
+    Covers: tool-loop, asset-exhaustion, and state-stagnation stall detection.
+    """
+
+    # --- _check_tool_loop ---
+
+    def test_check_tool_loop_detects_repeated_actions(self, sample_allowed_tools, sample_authorized_assets):
+        """3+ consecutive identical tool/command -> stall."""
+        selector = ActionSelector(decision_strategy="hybrid")
+        state = WorldState(open_ports=[80])  # stays in fingerprint phase
+
+        action = AgentAction(tool="nmap", command="scan", target="10.0.0.10")
+
+        # First call: initializes _last_rule_action, no stall
+        assert selector._check_tool_loop(action) is None
+
+        # Second call: 1 same -> count=1, no stall
+        assert selector._check_tool_loop(action) is None
+
+        # Third call: 2 same -> count=2, no stall (threshold is 3)
+        assert selector._check_tool_loop(action) is None
+
+        # Fourth call: 3 same -> count >= 3 -> stall!
+        reason = selector._check_tool_loop(action)
+        assert reason is not None
+        assert "identical actions" in reason
+        assert "nmap/scan" in reason
+
+    def test_check_tool_loop_resets_on_different_action(self, sample_allowed_tools, sample_authorized_assets):
+        """Different action resets the stall counter."""
+        selector = ActionSelector(decision_strategy="hybrid")
+
+        # Two identical actions
+        for _ in range(2):
+            selector._check_tool_loop(AgentAction(tool="nmap", command="scan"))
+
+        # Different action resets
+        selector._check_tool_loop(AgentAction(tool="nmap", command="discover"))
+
+        # After reset, count=0. One discover -> count=1, still under threshold.
+        selector._check_tool_loop(AgentAction(tool="nmap", command="discover"))
+
+        # Second discover after reset -> count=2, still under threshold
+        reason = selector._check_tool_loop(AgentAction(tool="nmap", command="discover"))
+        assert reason is None
+
+    def test_check_tool_loop_first_call_no_stall(self):
+        """First call initializes, never stalls."""
+        selector = ActionSelector()
+        reason = selector._check_tool_loop(AgentAction(tool="nmap", command="discover"))
+        assert reason is None
+
+    # --- _check_asset_exhaustion ---
+
+    def test_check_asset_exhaustion_triggers(self):
+        """All authorized assets discovered + stall_count > 0 -> stall."""
+        selector = ActionSelector()
+        selector._stall_count = 3  # Must have stall evidence first
+        state = WorldState(discovered_assets=["10.0.0.10", "10.0.0.11", "10.0.0.12"])
+        authorized = ["10.0.0.10", "10.0.0.11", "10.0.0.12"]
+
+        reason = selector._check_asset_exhaustion(state, authorized)
+        assert reason is not None
+        assert "All 3 authorized assets have been discovered" in reason
+        assert "No rotation logic" in reason
+
+    def test_check_asset_exhaustion_not_triggered_without_stall(self):
+        """All assets discovered but stall_count is 0 -> no stall (clean phase transition)."""
+        selector = ActionSelector()
+        selector._stall_count = 0  # No stall evidence
+        state = WorldState(discovered_assets=["10.0.0.10", "10.0.0.11", "10.0.0.12"])
+        authorized = ["10.0.0.10", "10.0.0.11", "10.0.0.12"]
+
+        reason = selector._check_asset_exhaustion(state, authorized)
+        assert reason is None
+
+    def test_check_asset_exhaustion_skips_when_single_asset(self):
+        """Single authorized asset never triggers asset-exhaustion stall."""
+        selector = ActionSelector()
+        selector._stall_count = 3
+        state = WorldState(discovered_assets=["10.0.0.10"])
+        reason = selector._check_asset_exhaustion(state, ["10.0.0.10"])
+        assert reason is None
+
+    def test_check_asset_exhaustion_not_triggered_early(self):
+        """Not all authorized assets discovered yet -> no stall."""
+        selector = ActionSelector()
+        state = WorldState(discovered_assets=["10.0.0.10"])
+        authorized = ["10.0.0.10", "10.0.0.11", "10.0.0.12"]
+
+        reason = selector._check_asset_exhaustion(state, authorized)
+        assert reason is None
+
+    def test_check_asset_exhaustion_no_discovered_assets(self):
+        """No discovered assets at all -> no stall."""
+        selector = ActionSelector()
+        selector._stall_count = 3
+        state = WorldState()
+        reason = selector._check_asset_exhaustion(state, ["10.0.0.10", "10.0.0.11"])
+        assert reason is None
+
+    # --- _check_state_stagnation ---
+
+    def test_check_state_stagnation_triggers(self):
+        """State unchanged for 3+ consecutive steps -> stall."""
+        selector = ActionSelector()
+        state = WorldState(open_ports=[80], services=[{"name": "nginx"}])
+
+        # First call: initializes snapshot
+        assert selector._check_state_stagnation(state) is None
+
+        # Second call: same state -> count=1
+        assert selector._check_state_stagnation(state) is None
+
+        # Third call: same state -> count=2
+        assert selector._check_state_stagnation(state) is None
+
+        # Fourth call: same state -> count >= 3 -> stall!
+        reason = selector._check_state_stagnation(state)
+        assert reason is not None
+        assert "State has not progressed" in reason
+
+    def test_check_state_stagnation_resets_on_progress(self):
+        """State change resets the stagnation counter."""
+        selector = ActionSelector()
+
+        # Two calls with same state
+        state1 = WorldState(open_ports=[80])
+        selector._check_state_stagnation(state1)
+        selector._check_state_stagnation(state1)
+
+        # State changes -> resets counter
+        state2 = WorldState(open_ports=[80, 443])
+        assert selector._check_state_stagnation(state2) is None  # reset, count=0
+
+        # One more call with new state -> count=1
+        selector._check_state_stagnation(state2)
+
+        # Second call -> count=2, still under threshold (3)
+        assert selector._check_state_stagnation(state2) is None
+
+    def test_check_state_stagnation_first_call_no_stall(self):
+        """First call initializes snapshot, never stalls."""
+        selector = ActionSelector()
+        reason = selector._check_state_stagnation(WorldState())
+        assert reason is None
+
+    # --- _check_stalled (orchestrator) ---
+
+    def test_check_stalled_returns_first_reason(self, sample_authorized_assets):
+        """_check_stalled returns the first stall reason found."""
+        selector = ActionSelector()
+        state = WorldState(open_ports=[80])
+        action = AgentAction(tool="nmap", command="scan")
+
+        # Push tool-loop to threshold
+        for _ in range(3):
+            selector._check_tool_loop(action)
+
+        reason = selector._check_stalled(action, state, sample_authorized_assets)
+        assert reason is not None
+        # Should be tool-loop (checked first)
+        assert "identical actions" in reason
+
+    def test_check_stalled_none_when_progress(self, sample_authorized_assets):
+        """When all checks pass, _check_stalled returns None."""
+        selector = ActionSelector()
+        state = WorldState(open_ports=[80])
+        action = AgentAction(tool="nmap", command="discover")
+
+        # Different actions each time -> no tool-loop
+        selector._check_tool_loop(action)
+        selector._check_tool_loop(AgentAction(tool="nmap", command="scan"))
+
+        reason = selector._check_stalled(action, state, sample_authorized_assets)
+        assert reason is None
+
+
+# ===========================================================================
+# Hybrid strategy: integration
+# ===========================================================================
+
+
+class TestHybridStrategyIntegration:
+    """Tests for the hybrid strategy in select_action and get_next_action.
+
+    Covers: hybrid stall -> reasoning marker, LLM fallback, agent stop.
+    """
+
+    @pytest.fixture
+    def hybrid_tools(self) -> list[dict]:
+        """Tools where the rule selector will always pick the same tool."""
+        return [
+            {
+                "name": "nmap",
+                "version": "7.95",
+                "allowed_commands": ["discover", "scan"],
+            },
+            {
+                "name": "reporter",
+                "version": "1.0",
+                "allowed_commands": ["summary"],
+            },
+        ]
+
+    def test_hybrid_strategy_reasoning_contains_stall(
+        self, hybrid_tools, sample_authorized_assets,
+    ):
+        """Stalled hybrid selector bakes RULE_ENGINE_STALLED into action.reasoning."""
+        selector = ActionSelector(decision_strategy="hybrid")
+
+        # State that keeps selector in the same phase (fingerprint)
+        state = WorldState(open_ports=[80])
+
+        # Call select_action 5 times (threshold=3 -> stall on 4th+)
+        for i in range(6):
+            action = selector.select_action(
+                state, hybrid_tools, sample_authorized_assets,
+                "Test", step=i + 1, previous_actions=[],
+            )
+            # After the 4th call (0-indexed: 3), stall should trigger
+            if i >= 3:
+                assert "RULE_ENGINE_STALLED" in action.reasoning, (
+                    f"Expected stall on call {i}, got: {action.reasoning}"
+                )
+
+    def test_hybrid_strategy_no_stall_on_progress(
+        self, hybrid_tools, sample_authorized_assets,
+    ):
+        """State progress prevents stall."""
+        selector = ActionSelector(decision_strategy="hybrid")
+
+        # Start empty -> recon
+        state = WorldState()
+        action = selector.select_action(
+            state, hybrid_tools, sample_authorized_assets,
+            "Test", step=1, previous_actions=[],
+        )
+        assert "RULE_ENGINE_STALLED" not in action.reasoning
+
+        # Now with ports -> fingerprint (different command)
+        state = WorldState(open_ports=[80])
+        action = selector.select_action(
+            state, hybrid_tools, sample_authorized_assets,
+            "Test", step=2, previous_actions=[],
+        )
+        assert "RULE_ENGINE_STALLED" not in action.reasoning
+
+        # Services done -> vuln/report (different tool)
+        state = WorldState(
+            open_ports=[80],
+            services=[{"name": "nginx"}],
+            vulnerabilities=[{"id": "CVE-001"}],
+        )
+        action = selector.select_action(
+            state, hybrid_tools, sample_authorized_assets,
+            "Test", step=5, previous_actions=[],
+        )
+        assert "RULE_ENGINE_STALLED" not in action.reasoning
+
+    def test_hybrid_strategy_llm_fallback_different_action(
+        self, hybrid_tools, sample_authorized_assets,
+    ):
+        """LLM fallback that produces a different action resets stall."""
+        # Use a custom ActionSelector that overrides _select_with_llm
+        class LLMRescueSelector(ActionSelector):
+            def __init__(self):
+                super().__init__(decision_strategy="hybrid", llm_prompt="rescue prompt")
+                self.llm_calls = 0
+
+            def _select_with_llm(self, state, allowed_tools, authorized_assets, objective, step, previous_actions):
+                self.llm_calls += 1
+                # Return a DIFFERENT action than the rule selector
+                return AgentAction(
+                    tool="reporter",
+                    command="summary",
+                    target="10.0.0.10",
+                    reasoning=f"LLM fallback call #{self.llm_calls}",
+                )
+
+        selector = LLMRescueSelector()
+        state = WorldState(open_ports=[80])  # keeps in fingerprint (nmap scan)
+
+        # Call until stall should trigger (threshold=3, so call 0,1,2 no stall, call 3+ stall)
+        for i in range(5):
+            action = selector.select_action(
+                state, hybrid_tools, sample_authorized_assets,
+                "Test", step=i + 1, previous_actions=[],
+            )
+
+        # LLM was called at least once (after stall triggered)
+        assert selector.llm_calls >= 1
+        # The LLM action (reporter/summary) is different from rule action (nmap/scan)
+        # so it should NOT have RULE_ENGINE_STALLED reasoning
+        assert "RULE_ENGINE_STALLED" not in action.reasoning
+
+    def test_hybrid_strategy_llm_fallback_same_action(
+        self, hybrid_tools, sample_authorized_assets,
+    ):
+        """LLM returns same stalled action -> stall marker in reasoning."""
+        class StuckLLMSelector(ActionSelector):
+            def __init__(self):
+                super().__init__(decision_strategy="hybrid", llm_prompt="stuck prompt")
+                self.llm_calls = 0
+
+            def _select_with_llm(self, state, allowed_tools, authorized_assets, objective, step, previous_actions):
+                self.llm_calls += 1
+                # Return SAME action as rule selector would (nmap/scan)
+                return AgentAction(
+                    tool="nmap",
+                    command="scan",
+                    target="10.0.0.10",
+                    reasoning=f"LLM fallback call #{self.llm_calls}",
+                )
+
+        selector = StuckLLMSelector()
+        state = WorldState(open_ports=[80])
+
+        stalled_action = None
+        for i in range(5):
+            action = selector.select_action(
+                state, hybrid_tools, sample_authorized_assets,
+                "Test", step=i + 1, previous_actions=[],
+            )
+            # Capture the action when stall triggers (4th call, 0-indexed: 3)
+            if i == 3:
+                stalled_action = action
+
+        # LLM was called at least once (after stall triggered)
+        assert selector.llm_calls >= 1
+        # When LLM returns same action, the action should have RULE_ENGINE_STALLED
+        assert stalled_action is not None, "Stall should have triggered on call 4"
+        assert "RULE_ENGINE_STALLED" in stalled_action.reasoning
+        assert "LLM fallback also returned the same action" in stalled_action.reasoning
+
+    def test_hybrid_strategy_no_llm_configured(
+        self, hybrid_tools, sample_authorized_assets,
+    ):
+        """No LLM prompt configured -> stall marker with 'No LLM fallback' note."""
+        selector = ActionSelector(decision_strategy="hybrid")
+        assert selector.llm_prompt is None  # no LLM configured
+
+        state = WorldState(open_ports=[80])
+
+        action = None
+        for i in range(5):
+            action = selector.select_action(
+                state, hybrid_tools, sample_authorized_assets,
+                "Test", step=i + 1, previous_actions=[],
+            )
+
+        assert "RULE_ENGINE_STALLED" in action.reasoning
+        assert "No LLM fallback configured" in action.reasoning
+
+    def test_get_next_action_raises_on_stalled(
+        self, hybrid_tools, sample_authorized_assets,
+    ):
+        """get_next_action raises AgentStopTriggered when selector stalls."""
+        agent = AgentCore(
+            allowed_tools=hybrid_tools,
+            authorized_assets=sample_authorized_assets,
+            objective="Test hybrid stall",
+            decision_strategy="hybrid",
+            max_steps=20,
+        )
+        # Pre-populate state so selector stays in same phase
+        agent.state.open_ports = [80]
+
+        # First 3 calls should work (no stall yet)
+        for _ in range(3):
+            action = agent.get_next_action()
+            agent.step_action(action, {"last_action_result": "still scanning"})
+
+        # 4th+ call should trigger stall -> AgentStopTriggered
+        with pytest.raises(AgentStopTriggered, match="RULE_ENGINE_STALLED"):
+            agent.get_next_action()
+
+        assert agent.halted
+        assert agent.stop_reason == StopReason.RULE_ENGINE_STALLED
+
+    def test_hybrid_agent_loop_stops_on_stall(self, hybrid_tools, sample_authorized_assets):
+        """run_agent_loop with hybrid strategy stops via RULE_ENGINE_STALLED."""
+        agent = AgentCore(
+            allowed_tools=hybrid_tools,
+            authorized_assets=sample_authorized_assets,
+            objective="Test",
+            decision_strategy="hybrid",
+            max_steps=20,
+        )
+        agent.state.open_ports = [80]  # Start with ports so selector stays in fingerprint
+
+        def execute(action):
+            return {"last_action_result": "scanning..."}
+
+        state, evidence, reason = run_agent_loop(agent, execute)
+
+        assert reason == StopReason.RULE_ENGINE_STALLED
+        assert len(evidence) >= 3
+
+    def test_hybrid_loop_with_llm_fallback_unstucks(
+        self, hybrid_tools, sample_authorized_assets,
+    ):
+        """LLM fallback that advances state prevents stall loop exit."""
+        class ProgressiveSelector(ActionSelector):
+            def __init__(self):
+                super().__init__(decision_strategy="hybrid", llm_prompt="progress prompt")
+                self.llm_calls = 0
+
+            def _select_with_llm(self, state, allowed_tools, authorized_assets, objective, step, previous_actions):
+                self.llm_calls += 1
+                # LLM returns a different action that actually produces progress
+                return AgentAction(
+                    tool="reporter", command="summary", target="10.0.0.10",
+                )
+
+        agent = AgentCore(
+            allowed_tools=hybrid_tools,
+            authorized_assets=sample_authorized_assets,
+            objective="Test",
+            decision_strategy="hybrid",
+            llm_prompt="progress prompt",
+            max_steps=10,
+        )
+        # Inject the custom selector
+        selector = ProgressiveSelector()
+        agent._action_selector = selector
+
+        agent.state.open_ports = [80]  # Stays in fingerprint without progress
+
+        # Execute should trigger stall -> LLM fallback -> different action
+        def execute(action):
+            return {"last_action_result": "summary done"}
+
+        state, evidence, reason = run_agent_loop(agent, execute)
+
+        # LLM was called at least once (unstuck from stall)
+        assert selector.llm_calls >= 1
+        # The agent may still stop via MAX_STEPS after running out of steps
+        # The important thing is it didn't stop via RULE_ENGINE_STALLED
+        # (because LLM unblocked it)
+        assert reason != StopReason.RULE_ENGINE_STALLED
+
+
+# ===========================================================================
 # FindingSummary
 # ===========================================================================
 

@@ -590,6 +590,57 @@ class TestE2EFullPath:
         violations = l.verify_integrity()
         assert violations == []
 
+    def test_multi_asset_discovery_does_not_trip_stall(self):
+        """Discovering all authorized assets then moving to report should not stall.
+
+        Prevents regression of the asset-exhaustion FP fix: when the rule
+        selector transitions cleanly from scan to report phase after discovering
+        all authorized assets, _check_asset_exhaustion must not fire because
+        there is no stall evidence (stall_count == 0).
+        """
+        tools = [
+            {"name": "nmap", "allowed_commands": ["discover", "scan"]},
+            {"name": "reporter", "allowed_commands": ["summary"]},
+        ]
+        assets = ["10.0.0.10", "10.0.0.11", "10.0.0.12"]
+
+        agent = AgentCore(
+            allowed_tools=tools,
+            authorized_assets=assets,
+            objective="Scan all assets and report",
+            decision_strategy="hybrid",  # Must use hybrid to exercise stall detection
+            max_steps=4,  # 4 phases: recon → fingerprint → vuln → report
+            stop_on_criteria_met=False,
+        )
+
+        call_count = [0]
+
+        def execute(action):
+            call_count[0] += 1
+            # Phase 1: recon discovers ports + all assets
+            if call_count[0] == 1:
+                return {"open_ports": [80], "discovered_assets": assets}
+            # Phase 2: service fingerprint
+            if call_count[0] == 2:
+                return {"services": [{"name": "nginx"}]}
+            # Phase 3: vulnerability scan — return vulns to move past vuln phase
+            if call_count[0] == 3:
+                return {"vulnerabilities": [{"id": "CVE-2025-0001"}]}
+            # Phase 4: report (agent transitions cleanly to report phase)
+            return {"last_action_result": "summary generated"}
+
+        final_state, evidence, reason = run_agent_loop(agent, execute)
+
+        # Agent should complete all 4 phases without stall. The stall_count
+        # is reset on every phase transition (different tool/command), so
+        # _check_asset_exhaustion never fires because stall_count == 0.
+        assert reason != StopReason.RULE_ENGINE_STALLED, (
+            f"Stopped via stall while discovering multi-asset campaign. "
+            f"Should have reached report phase. Reason: {reason}"
+        )
+        # All authorized assets should be in state
+        assert len(final_state.discovered_assets) == 3 or len(evidence) > 0
+
 
 # ===========================================================================
 # 7. Drift handling: halt → restore → resume

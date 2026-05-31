@@ -32,7 +32,7 @@
       "type": "string",
       "enum": ["llm", "rule", "hybrid"],
       "default": "llm",
-      "description": "How the agent selects its next action: 'llm' uses an LLM prompt, 'rule' uses a deterministic rule engine, 'hybrid' uses both with fallback."
+      "description": "How the agent selects its next action: 'llm' uses an LLM prompt, 'rule' uses a deterministic rule engine, 'hybrid' uses rule-based selection with automatic LLM fallback when the rule engine stalls (repeated identical actions without state progress)."
     },
     "llm_prompt": {
       "type": "string",
