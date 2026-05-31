@@ -1211,6 +1211,15 @@ class AgentCore:
                     max_tokens=llm_provider_config.get("max_tokens", 2048),
                     **llm_kwargs,
                 )
+            elif provider_type == "openrouter":
+                from gatekeeper_eos_v6.providers import OpenRouterProvider
+
+                llm_provider = OpenRouterProvider(
+                    model=llm_provider_config.get("model", "meta-llama/llama-3.2-3b-instruct:free"),
+                    temperature=llm_provider_config.get("temperature", 0.2),
+                    max_tokens=llm_provider_config.get("max_tokens", 1024),
+                    **llm_kwargs,
+                )
             elif provider_type in ("mock", "test"):
                 llm_provider = MockLLMProvider(
                     model=llm_provider_config.get("model", "mock"),

@@ -37,7 +37,7 @@ from gatekeeper_eos_v6.agentic import (
     parse_iso_duration,
     run_agent_loop,
 )
-from gatekeeper_eos_v6.providers import OpenAIProvider, AnthropicProvider, GoogleProvider, create_llm_provider, RateLimiter, CircuitBreaker, CircuitState, _call_with_retry, _is_retryable_error
+from gatekeeper_eos_v6.providers import OpenAIProvider, AnthropicProvider, GoogleProvider, OpenRouterProvider, create_llm_provider, RateLimiter, CircuitBreaker, CircuitState, _call_with_retry, _is_retryable_error
 
 
 # ===========================================================================
@@ -2035,6 +2035,74 @@ class TestGoogleProvider:
             assert isinstance(prov, GoogleProvider)
             assert prov.model == "gemini-1.5-pro"
 
+
+
+
+# ===========================================================================
+# OpenRouterProvider (OpenAI-compatible, via OpenRouter's unified API)
+# ===========================================================================
+
+
+class TestOpenRouterProvider:
+    """Tests for OpenRouterProvider — an OpenAI-compatible provider via OpenRouter."""
+
+    def test_openrouter_requires_key(self, monkeypatch):
+        """Without OPENROUTER_API_KEY, OpenRouterProvider raises ValueError."""
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
+            OpenRouterProvider()
+
+    def test_openrouter_accepts_explicit_key(self, monkeypatch):
+        """OpenRouterProvider accepts an explicit api_key argument."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            provider = OpenRouterProvider()
+            mock_openai.assert_called_once()
+            kwargs = mock_openai.call_args.kwargs
+            assert kwargs["api_key"] == "sk-or-v1-test"
+            assert "openrouter.ai" in kwargs.get("base_url", "")
+            assert provider.model == "meta-llama/llama-3.2-3b-instruct:free"
+
+    def test_openrouter_with_custom_model(self, monkeypatch):
+        """OpenRouterProvider accepts a custom model."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+        with unittest.mock.patch("openai.OpenAI"):
+            provider = OpenRouterProvider(model="microsoft/phi-3-mini-4k-instruct:free")
+            assert provider.model == "microsoft/phi-3-mini-4k-instruct:free"
+
+    def test_openrouter_base_url(self, monkeypatch):
+        """OpenRouterProvider always uses OpenRouter base URL."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            OpenRouterProvider()
+            kwargs = mock_openai.call_args.kwargs
+            assert kwargs["base_url"] == "https://openrouter.ai/api/v1"
+
+    def test_openrouter_generate_calls_api(self, monkeypatch):
+        """OpenRouterProvider.generate() calls the OpenAI SDK and returns response."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+        mock_response = unittest.mock.MagicMock()
+        mock_response.choices[0].message.content = '{"tool": "nmap", "command": "discover"}'
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+            mock_client.chat.completions.create.return_value = mock_response
+
+            provider = OpenRouterProvider()
+            result = provider.generate("test prompt")
+            assert result == '{"tool": "nmap", "command": "discover"}'
+            assert provider.call_count == 1
+
+    def test_openrouter_create_llm_provider_factory(self, monkeypatch):
+        """create_llm_provider returns OpenRouterProvider for 'openrouter'."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+        with unittest.mock.patch("openai.OpenAI"):
+            from gatekeeper_eos_v6.providers import create_llm_provider
+
+            prov = create_llm_provider("openrouter", model="meta-llama/llama-3.2-3b-instruct:free")
+            assert isinstance(prov, OpenRouterProvider)
+            assert prov.model == "meta-llama/llama-3.2-3b-instruct:free"
 
 # ===========================================================================
 # Integration: agentic campaign YAML loading

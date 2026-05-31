@@ -799,6 +799,72 @@ class GoogleProvider(LLMProvider):
 
 
 # ---------------------------------------------------------------------------
+# OpenRouter provider (OpenAI-compatible, via OpenRouter's unified API)
+# ---------------------------------------------------------------------------
+
+
+class OpenRouterProvider(OpenAIProvider):
+    """LLM provider backed by OpenRouter's unified API endpoint.
+
+    OpenRouter provides a unified OpenAI-compatible API for many LLM
+    providers.  This class wraps ``OpenAIProvider`` with OpenRouter-
+    specific defaults.
+
+    Reads ``OPENROUTER_API_KEY`` from the environment by default.
+    The default model is a free-tier model on OpenRouter.
+
+    Parameters
+    ----------
+    api_key:
+        OpenRouter API key.  Defaults to ``OPENROUTER_API_KEY`` env var.
+    model:
+        Model ID on OpenRouter (default: ``meta-llama/llama-3.2-3b-instruct:free``).
+        See https://openrouter.ai/models for available models.
+    temperature:
+        Sampling temperature (default 0.2).
+    max_tokens:
+        Max tokens in the response (default 1024).
+    timeout:
+        HTTP request timeout in seconds (default 30).
+    max_retries:
+        Max retries on transient errors (default 3).
+    rate_limiter:
+        Optional ``RateLimiter`` instance.
+    circuit_breaker:
+        Optional ``CircuitBreaker`` instance.
+    """
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str = "meta-llama/llama-3.2-3b-instruct:free",
+        temperature: float = 0.2,
+        max_tokens: int = 1024,
+        timeout: int = 30,
+        max_retries: int = 3,
+        rate_limiter: RateLimiter | None = None,
+        circuit_breaker: CircuitBreaker | None = None,
+    ) -> None:
+        key = api_key or os.environ.get("OPENROUTER_API_KEY")
+        if not key:
+            raise ValueError(
+                "OPENROUTER_API_KEY not set. Export it or pass api_key= to the constructor."
+            )
+
+        super().__init__(
+            api_key=key,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            base_url="https://openrouter.ai/api/v1",
+            max_retries=max_retries,
+            rate_limiter=rate_limiter,
+            circuit_breaker=circuit_breaker,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Factory helpers
 # ---------------------------------------------------------------------------
 
@@ -832,8 +898,10 @@ def create_llm_provider(
         return AnthropicProvider(model=model, **kwargs)
     if provider_type in ("google", "gemini"):
         return GoogleProvider(model=model, **kwargs)
+    if provider_type == "openrouter":
+        return OpenRouterProvider(model=model, **kwargs)
     if provider_type in ("mock", "test"):
         from gatekeeper_eos_v6.agentic import MockLLMProvider
 
         return MockLLMProvider(model=model, default_action=kwargs.get("default_action"))
-    raise ValueError(f"Unknown provider_type: {provider_type!r}. Supported: openai, anthropic, google, mock")
+    raise ValueError(f"Unknown provider_type: {provider_type!r}. Supported: openai, anthropic, google, openrouter, mock")

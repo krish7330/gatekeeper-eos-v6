@@ -7,6 +7,7 @@ Set the following environment variables to run:
   - ANTHROPIC_API_KEY        (or passed via --anthropic-key)
   - GEMINI_API_KEY           (or passed via --gemini-key)
   - GROQ_API_KEY             (or passed via --groq-key; also needs OPENAI_BASE_URL)
+  - OPENROUTER_API_KEY       (or passed via --openrouter-key)
 
 Usage:
     # Test all providers (keys must be set in env)
@@ -18,9 +19,7 @@ Usage:
     # Pass keys inline (overrides env)
     python scripts/smoke_test_providers.py \\
         --openai-key sk-... \\
-        --anthropic-key sk-ant-... \\
-        --gemini-key AIza... \\
-        --groq-key gsk_...
+        --openrouter-key sk-or-...
 
 Each test sends a simple JSON-format prompt and validates the response
 contains parseable tool/command/arguments JSON.
@@ -40,6 +39,7 @@ from gatekeeper_eos_v6.providers import (
     OpenAIProvider,
     AnthropicProvider,
     GoogleProvider,
+    OpenRouterProvider,
 )
 
 # ---------------------------------------------------------------------------
@@ -121,6 +121,8 @@ def main():
     parser.add_argument("--anthropic-key", help="Anthropic API key")
     parser.add_argument("--gemini-key", help="Gemini API key")
     parser.add_argument("--groq-key", help="Groq API key")
+    parser.add_argument("--openrouter-key", help="OpenRouter API key")
+    parser.add_argument("--openrouter-only", action="store_true", help="Test only OpenRouter")
     parser.add_argument("--all", action="store_true", default=True, help="Test all providers (default)")
     parser.add_argument("--openai-only", action="store_true", help="Test only OpenAI")
     parser.add_argument("--anthropic-only", action="store_true", help="Test only Anthropic")
@@ -136,10 +138,12 @@ def main():
         providers_to_test = ["anthropic"]
     elif args.gemini_only:
         providers_to_test = ["gemini"]
-    elif args.groq_only:
+    el    if args.groq_only:
         providers_to_test = ["groq"]
+    elif args.openrouter_only:
+        providers_to_test = ["openrouter"]
     else:
-        providers_to_test = ["openai", "anthropic", "gemini", "groq"]
+        providers_to_test = ["openai", "anthropic", "gemini", "groq", "openrouter"]
 
     results: list[tuple[str, bool, str]] = []
 
@@ -224,6 +228,7 @@ def main():
             try:
                 provider = OpenAIProvider(
                     model="llama-3.3-70b-versatile",
+                    api_key=key,
                     base_url="https://api.groq.com/openai/v1",
                     temperature=0.1,
                     max_tokens=512,
@@ -234,6 +239,28 @@ def main():
             except Exception as e:
                 print(f"  ❌ INIT ERROR: {e}\n")
                 results.append(("groq", False, str(e)))
+        print()
+
+    # ---- OpenRouter ----
+    if "openrouter" in providers_to_test:
+        print("[5/5] OpenRouter (OpenRouter Free Models)")
+        key = args.openrouter_key or os.environ.get("OPENROUTER_API_KEY")
+        if not key:
+            print("  ⏭  SKIP (no OPENROUTER_API_KEY)\n")
+            results.append(("openrouter", False, "No key"))
+        else:
+            try:
+                provider = OpenRouterProvider(
+                    model="meta-llama/llama-3.2-3b-instruct:free",
+                    temperature=0.1,
+                    max_tokens=512,
+                    timeout=args.timeout,
+                )
+                ok, detail = smoke_test("OpenRouter", provider, "meta-llama/llama-3.2-3b-instruct:free", args.timeout)
+                results.append(("openrouter", ok, detail))
+            except Exception as e:
+                print(f"  ❌ INIT ERROR: {e}\n")
+                results.append(("openrouter", False, str(e)))
         print()
 
     # ---- Summary ----

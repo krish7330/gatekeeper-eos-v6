@@ -309,6 +309,7 @@ orchestrator. Four providers are supported, all implementing the same
 | **Anthropic** | `anthropic` | `claude-sonnet-4-20250514` | `ANTHROPIC_API_KEY` | `anthropic` |
 | **Google (Gemini)** | `google` / `gemini` | `gemini-2.0-flash` | `GEMINI_API_KEY` | `google-genai` |
 | **Groq** (via OpenAI compat) | `openai` + `base_url` | `llama-3.3-70b-versatile` | `OPENAI_API_KEY` (set to Groq key) | `openai` |
+| **OpenRouter** | `openrouter` | `meta-llama/llama-3.2-3b-instruct:free` | `OPENROUTER_API_KEY` | `openai` (OpenAI SDK) |
 | **Mock** | `mock` | `mock` | None | Built-in |
 
 ### YAML Configuration
@@ -367,6 +368,19 @@ llm_provider_config:
   max_retries: 3            # handles Groq 429s automatically
 ```
 
+**OpenRouter** (uses `OPENROUTER_API_KEY` — single key for many models):
+```yaml
+llm_provider_config:
+  type: openrouter
+  model: meta-llama/llama-3.2-3b-instruct:free
+  temperature: 0.2
+  max_tokens: 1024
+```
+
+OpenRouter provides access to many models through a single OpenAI-compatible
+endpoint.  Free models like ``meta-llama/llama-3.2-3b-instruct:free`` require
+no billing.  See https://openrouter.ai/models for the full catalog.
+
 **Mock** (no API key needed — for testing / offline):
 ```yaml
 llm_provider_config:
@@ -376,7 +390,7 @@ llm_provider_config:
 
 ### Rate Limiting & Retries
 
-All production providers (OpenAI, Anthropic, Google) automatically apply:
+All production providers (OpenAI, Anthropic, Google, OpenRouter) automatically apply:
 
 | Feature | Details |
 |---------|---------|
@@ -470,6 +484,10 @@ p = create_llm_provider("google", model="gemini-2.0-flash")
 p = create_llm_provider("openai", model="llama-3.3-70b-versatile",
                         base_url="https://api.groq.com/openai/v1")
 
+# OpenRouter (single key for many models)
+p = create_llm_provider("openrouter",
+                         model="meta-llama/llama-3.2-3b-instruct:free")
+
 # Generate an action
 response = p.generate('{"tool": "nmap", "command": "discover"}')
 ```
@@ -485,7 +503,8 @@ reconnaissance, Claude for report generation, Gemini for cross-referencing.
 
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
-| `ValueError: Missing API key` | Env var not set | Export `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `GEMINI_API_KEY` |
+| `ValueError: Missing API key` | Env var not set | Export `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, or `OPENROUTER_API_KEY` |
+| `ConnectionError` to OpenRouter | Network issue or OpenRouter outage | Verify `OPENROUTER_API_KEY` is valid and check status.openrouter.ai |
 | Frequent 429 errors | Rate limit exceeded | Increase `max_retries`, reduce `tokens_per_second` in `RateLimiter`, or check provider quota |
 | Empty responses from `generate()` | API error (non-retryable) | Check `provider.retry_count` and `provider.last_rate_limit_hit` for diagnostics |
 | Consistent empty responses after initial failures | Circuit breaker is OPEN | Check `provider._circuit_breaker.state`, `failure_count`, and `_last_failure_time`. Increase `failure_threshold` or `recovery_timeout`, or call `circuit_breaker.reset()` manually |
