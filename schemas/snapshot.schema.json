@@ -1,0 +1,292 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/krishanumala/gatekeeper-eos-v6/schemas/snapshot.schema.json",
+  "title": "Snapshot Ledger Entry",
+  "description": "Immutable, tamper-evident snapshot of agent state at a validated checkpoint. Each entry records the agent's full operational context (working memory, tool call history, conversation summary) with a SHA-256 hash chain linking it to the previous entry. The ledger is external to the agent — the agent cannot modify it, nor does it control when snapshots are taken or restored.",
+  "type": "object",
+  "required": [
+    "entry_type",
+    "session_id",
+    "checkpoint_id",
+    "timestamp",
+    "working_memory",
+    "conversation_summary",
+    "tool_call_history",
+    "hash",
+    "chain_hash",
+    "prev_chain_hash",
+    "metadata",
+    "sequence"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "entry_type": {
+      "type": "string",
+      "const": "memory_snapshot",
+      "description": "Fixed discriminator identifying this as a memory snapshot entry."
+    },
+    "session_id": {
+      "type": "string",
+      "pattern": "^SESS-[a-zA-Z0-9-]+$",
+      "description": "Session identifier the snapshot belongs to. Used for cross-session isolation in the shared ledger."
+    },
+    "checkpoint_id": {
+      "type": "string",
+      "pattern": "^CKPT-[0-9]{4}-[a-z]+(-[a-z]+)?$",
+      "description": "Checkpoint identifier, unique within a session. Format: CKPT-NNNN-tag (e.g. CKPT-0000-init, CKPT-0001-pre, CKPT-0002-restore)."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of when the snapshot was taken."
+    },
+    "working_memory": {
+      "$ref": "#/definitions/world_state",
+      "description": "Serialized WorldState of the agent at snapshot time. Deep-copied to prevent agent-side mutation from breaking the hash chain."
+    },
+    "conversation_summary": {
+      "type": "string",
+      "maxLength": 5000,
+      "description": "Optional text summary of the conversation context at snapshot time."
+    },
+    "tool_call_history": {
+      "type": "array",
+      "description": "Serialized evidence log — each entry documents a tool call, its output, and the agent's reasoning for that call.",
+      "items": {
+        "$ref": "#/definitions/evidence_entry"
+      }
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA-256 hex digest of the state payload (working_memory + tool_call_history + conversation_summary)."
+    },
+    "chain_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "Chained hash: SHA-256(prev_chain_hash || hash). Links this entry to the previous entry in the ledger."
+    },
+    "prev_chain_hash": {
+      "oneOf": [
+        {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        {"type": "string", "maxLength": 0}
+      ],
+      "description": "The chain_hash of the previous ledger entry. Empty string for the first entry (genesis)."
+    },
+    "metadata": {
+      "type": "object",
+      "required": ["drift_score"],
+      "additionalProperties": false,
+      "properties": {
+        "drift_score": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Drift score at snapshot time. 0 = all invariants satisfied (clean). >0 = drift detected."
+        },
+        "invariants_satisfied": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_-]+$"
+          },
+          "description": "List of invariant IDs that held at snapshot time (e.g. ['INIT', 'BEFORE_STEP', 'INV-001'])."
+        },
+        "approval_token_id": {
+          "type": "string",
+          "description": "Optional approval token from the authorization layer (e.g. human-in-the-loop approval)."
+        }
+      }
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Zero-based sequence number in the ledger. Assigned when the entry is appended."
+    }
+  },
+  "definitions": {
+    "world_state": {
+      "type": "object",
+      "description": "Serialized agent world model. Tracks what the agent has discovered and its current operational context.",
+      "additionalProperties": true,
+      "properties": {
+        "open_ports": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "description": "List of open TCP/UDP ports discovered so far."
+        },
+        "services": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/service_entry"
+          },
+          "description": "Discovered services with version fingerprints."
+        },
+        "vulnerabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/vulnerability_entry"
+          },
+          "description": "Confirmed vulnerabilities with severity and optional CVE."
+        },
+        "discovered_assets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "IP addresses or hostnames of discovered assets in scope."
+        },
+        "findings_summary": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/finding_summary"
+          },
+          "description": "Aggregated findings summary — each entry is a human-readable security finding with severity."
+        },
+        "last_action_result": {
+          "type": "string",
+          "description": "Raw text output of the most recent agent action."
+        }
+      }
+    },
+    "service_entry": {
+      "type": "object",
+      "description": "A discovered network service with optional version information.",
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Service name (e.g. nginx, sshd, httpd)."
+        },
+        "version": {
+          "type": "string",
+          "description": "Detected version string (e.g. 1.24.0)."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Port the service is running on."
+        },
+        "protocol": {
+          "type": "string",
+          "enum": ["tcp", "udp"],
+          "description": "Transport protocol."
+        }
+      }
+    },
+    "vulnerability_entry": {
+      "type": "object",
+      "description": "A confirmed security vulnerability.",
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Internal vulnerability identifier or CVE ID."
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["info", "low", "medium", "high", "critical"],
+          "description": "Risk level."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of the vulnerability."
+        },
+        "cve": {
+          "type": "string",
+          "pattern": "^CVE-\\d{4}-\\d{4,}$",
+          "description": "Optional CVE identifier."
+        }
+      }
+    },
+    "finding_summary": {
+      "type": "object",
+      "description": "Summary of a single security finding.",
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Short description (e.g. 'Open SSH port on 10.0.0.10')."
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["info", "low", "medium", "high", "critical"],
+          "description": "Risk level."
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Confidence score from 0 (speculative) to 1 (confirmed)."
+        },
+        "cve": {
+          "type": "string",
+          "pattern": "^CVE-\\d{4}-\\d{4,}$",
+          "description": "Optional CVE identifier."
+        },
+        "remediation": {
+          "type": "string",
+          "description": "Optional recommended fix."
+        }
+      },
+      "required": ["title", "severity"],
+      "additionalProperties": false
+    },
+    "evidence_entry": {
+      "type": "object",
+      "description": "A single step in the agent's evidence log documenting a tool call, its output, and the agent's reasoning.",
+      "additionalProperties": false,
+      "properties": {
+        "step": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "One-based step number."
+        },
+        "action": {
+          "$ref": "#/definitions/agent_action"
+        },
+        "output": {
+          "type": "object",
+          "description": "Raw output returned by the tool. May be any JSON value."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 timestamp of when the action was executed."
+        }
+      }
+    },
+    "agent_action": {
+      "type": "object",
+      "description": "A single atomic action selected by the agent.",
+      "additionalProperties": false,
+      "properties": {
+        "tool": {
+          "type": "string",
+          "description": "Tool name (e.g. nmap, curl, nikto, reporter)."
+        },
+        "command": {
+          "type": "string",
+          "description": "Tool-specific command or sub-command (e.g. scan, version_detect, exploit)."
+        },
+        "arguments": {
+          "type": "object",
+          "description": "Key-value arguments passed to the tool."
+        },
+        "target": {
+          "type": "string",
+          "description": "Target IP address or hostname for this action."
+        },
+        "reasoning": {
+          "type": "string",
+          "description": "Agent's chain-of-thought reasoning for selecting this action."
+        }
+      }
+    }
+  }
+}
