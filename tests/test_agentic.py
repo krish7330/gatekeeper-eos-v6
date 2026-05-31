@@ -3949,6 +3949,57 @@ class TestFromAgenticConfigParameterForwarding:
             assert "api_key" not in call_kwargs
             assert "base_url" not in call_kwargs
             assert "max_retries" not in call_kwargs
+
+    def test_openrouter_forwarding_api_key(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """api_key flows through from_agentic_config to OpenRouterProvider."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-forwarding-test")
+
+        with unittest.mock.patch("gatekeeper_eos_v6.providers.OpenRouterProvider") as mock_prov:
+            mock_instance = unittest.mock.MagicMock()
+            mock_prov.return_value = mock_instance
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "type": "openrouter",
+                    "model": "meta-llama/llama-3.2-3b-instruct:free",
+                    "api_key": "sk-or-forwarded-key",
+                },
+            }
+            AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+
+            call_kwargs = mock_prov.call_args.kwargs
+            assert call_kwargs["api_key"] == "sk-or-forwarded-key"
+            assert call_kwargs["model"] == "meta-llama/llama-3.2-3b-instruct:free"
+
+    def test_openrouter_forwarding_custom_model(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """Custom model flows through from_agentic_config to OpenRouterProvider."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-forwarding-test")
+
+        with unittest.mock.patch("gatekeeper_eos_v6.providers.OpenRouterProvider") as mock_prov:
+            mock_instance = unittest.mock.MagicMock()
+            mock_prov.return_value = mock_instance
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "type": "openrouter",
+                    "model": "microsoft/phi-3-mini-4k-instruct:free",
+                    "max_retries": 5,
+                },
+            }
+            AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+
+            call_kwargs = mock_prov.call_args.kwargs
+            assert call_kwargs["model"] == "microsoft/phi-3-mini-4k-instruct:free"
+            assert call_kwargs["max_retries"] == 5
+
 # ===========================================================================
 # CircuitBreaker
 # ===========================================================================
@@ -4721,6 +4772,106 @@ class TestFromAgenticConfigRateLimiterAndCircuitBreaker:
             assert "circuit_breaker" in call_kwargs
             assert call_kwargs["rate_limiter"]._capacity == 20
             assert call_kwargs["circuit_breaker"]._failure_threshold == 5
+
+    def test_openrouter_rate_limiter_config(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """rate_limiter_config is forwarded to OpenRouterProvider."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+
+        with unittest.mock.patch("gatekeeper_eos_v6.providers.OpenRouterProvider") as mock_prov:
+            mock_instance = unittest.mock.MagicMock()
+            mock_prov.return_value = mock_instance
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "type": "openrouter",
+                    "rate_limiter_config": {"capacity": 15, "tokens_per_second": 3.0},
+                },
+            }
+            AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+
+            call_kwargs = mock_prov.call_args.kwargs
+            assert "rate_limiter" in call_kwargs
+            assert call_kwargs["rate_limiter"]._capacity == 15
+
+    def test_openrouter_circuit_breaker_config(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """circuit_breaker_config is forwarded to OpenRouterProvider."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+
+        with unittest.mock.patch("gatekeeper_eos_v6.providers.OpenRouterProvider") as mock_prov:
+            mock_instance = unittest.mock.MagicMock()
+            mock_prov.return_value = mock_instance
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "type": "openrouter",
+                    "circuit_breaker_config": {"failure_threshold": 7, "recovery_timeout": 120},
+                },
+            }
+            AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+
+            call_kwargs = mock_prov.call_args.kwargs
+            assert "circuit_breaker" in call_kwargs
+            assert call_kwargs["circuit_breaker"]._failure_threshold == 7
+            assert call_kwargs["circuit_breaker"]._recovery_timeout == 120
+
+    def test_openrouter_both_configs(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """Both rate_limiter and circuit_breaker forwarded together to OpenRouterProvider."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+
+        with unittest.mock.patch("gatekeeper_eos_v6.providers.OpenRouterProvider") as mock_prov:
+            mock_instance = unittest.mock.MagicMock()
+            mock_prov.return_value = mock_instance
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "type": "openrouter",
+                    "rate_limiter_config": {"capacity": 20, "tokens_per_second": 2.0},
+                    "circuit_breaker_config": {"failure_threshold": 5},
+                },
+            }
+            AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+
+            call_kwargs = mock_prov.call_args.kwargs
+            assert "rate_limiter" in call_kwargs
+            assert "circuit_breaker" in call_kwargs
+            assert call_kwargs["rate_limiter"]._capacity == 20
+            assert call_kwargs["circuit_breaker"]._failure_threshold == 5
+
+    def test_openrouter_no_configs(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """Absent rate_limiter and circuit_breaker configs -> not forwarded to OpenRouterProvider."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+
+        with unittest.mock.patch("gatekeeper_eos_v6.providers.OpenRouterProvider") as mock_prov:
+            mock_instance = unittest.mock.MagicMock()
+            mock_prov.return_value = mock_instance
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "type": "openrouter",
+                    "model": "meta-llama/llama-3.2-3b-instruct:free",
+                },
+            }
+            AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+
+            call_kwargs = mock_prov.call_args.kwargs
+            assert "rate_limiter" not in call_kwargs
+            assert "circuit_breaker" not in call_kwargs
 
     def test_circuit_breaker_wired_in_providers_generate(self, monkeypatch):
         """CircuitBreaker.call is invoked when a provider's generate() is called with circuit_breaker set."""
