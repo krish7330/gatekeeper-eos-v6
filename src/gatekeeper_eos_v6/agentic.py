@@ -725,6 +725,16 @@ def check_agent_state_drift(
                     f"Hallucinated service '{svc_name}': not found in evidence log"
                 )
 
+    # Check for hallucinated vulnerabilities
+    if confirmed_vulns:
+        confirmed_vuln_ids = {v.get("id", "") for v in confirmed_vulns}
+        for vuln in state.vulnerabilities:
+            vuln_id = vuln.get("id", "")
+            if vuln_id and vuln_id not in confirmed_vuln_ids:
+                violations.append(
+                    f"Hallucinated vulnerability '{vuln_id}': not found in evidence log"
+                )
+
     return violations
 
 
