@@ -1,0 +1,60 @@
+# =============================================================================
+# Pentest Orchestrator — Multi-Session Campaign Example
+# =============================================================================
+campaign_id: CAMP-2026-05-WEBAPP
+
+sessions:
+  - session_id: SESS-recon
+    plan: PLAN-WEBAPP-01
+    schedule:
+      start_at: "2026-06-01T02:00:00Z"
+      max_duration: "PT30M"
+    max_parallel_actions: 3
+
+  - session_id: SESS-auth-bypass
+    plan:
+      plan_id: PLAN-AUTH-01
+      authorized_assets:
+        - auth.target.com
+      allowed_tools:
+        - name: curl
+          version: "7.88.1"
+          hash: "a1b2c3..."
+          allowed_commands: ["-X", "POST"]
+      objective: "Test for authentication bypass via SQL injection"
+      success_criteria:
+        - "No unauthorized access achieved"
+      rollback_steps:
+        - "Restore user table from backup"
+      approval_state: approved
+      expiry: "2026-06-02T00:00:00Z"
+      signature: "abc123..."
+    schedule:
+      start_at: "2026-06-01T02:30:00Z"
+      deadline: "2026-06-01T04:00:00Z"
+    dependencies:
+      - SESS-recon
+    drift_rules_override:
+      - id: DRIFT-TARGET
+        description: "Target fingerprint change is okay for this test."
+        action: LOG_ONLY
+
+global_drift_rules:
+  - id: DRIFT-TARGET
+    description: "Target must remain static."
+    action: HALT
+  - id: DRIFT-TOOLS
+    description: "Tool integrity mandatory."
+    action: HALT
+  - id: DRIFT-NET
+    description: "Executor network scope must not expand."
+    action: HALT
+  - id: DRIFT-SCHEMA
+    description: "Output schema violations are warnings only."
+    action: LOG_ONLY
+  - id: DRIFT-PLAN
+    description: "Plan tampering stops execution."
+    action: HALT
+  - id: DRIFT-EXPIRY
+    description: "Expiry halts session."
+    action: HALT

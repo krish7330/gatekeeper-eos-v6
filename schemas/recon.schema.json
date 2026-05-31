@@ -1,0 +1,88 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/krishanumala/gatekeeper-eos-v6/schemas/recon.schema.json",
+  "title": "Reconnaissance Session Output",
+  "description": "Schema for outputs produced by a recon session during multi-session penetration testing.",
+  "type": "object",
+  "required": ["session_id", "plan_id", "findings", "completed_at"],
+  "properties": {
+    "session_id": {
+      "type": "string",
+      "pattern": "^recon-\\d{2}$",
+      "description": "Session identifier, e.g. recon-01"
+    },
+    "plan_id": {
+      "type": "string",
+      "pattern": "^PTO-\\d{3}$",
+      "description": "Signed plan identifier this session belongs to"
+    },
+    "findings": {
+      "type": "array",
+      "description": "List of reconnaissance findings",
+      "items": {
+        "type": "object",
+        "required": ["type", "asset", "confidence", "description"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["dns", "port", "service", "technology", "endpoint", "leak", "cloud_asset", "third_party"],
+            "description": "Category of recon finding"
+          },
+          "asset": {
+            "type": "string",
+            "description": "The specific asset, endpoint, or resource discovered"
+          },
+          "confidence": {
+            "type": "string",
+            "enum": ["High", "Medium", "Low"],
+            "description": "Confidence level based on available evidence"
+          },
+          "description": {
+            "type": "string",
+            "minLength": 10,
+            "description": "Detailed description of the finding"
+          },
+          "attack_vectors": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Potential attack vectors this finding enables"
+          },
+          "evidence": {
+            "type": "string",
+            "description": "Supporting evidence or rationale for the finding"
+          }
+        }
+      },
+      "minItems": 0
+    },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "total_findings": { "type": "integer", "minimum": 0 },
+        "high_confidence": { "type": "integer", "minimum": 0 },
+        "medium_confidence": { "type": "integer", "minimum": 0 },
+        "low_confidence": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["total_findings"]
+    },
+    "drift_flagged": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether this session output triggered a drift warning"
+    },
+    "drift_reason": {
+      "type": "string",
+      "description": "If drift_flagged is true, the reason for the drift warning"
+    },
+    "completed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when the session completed"
+    },
+    "target_scope": {
+      "type": "string",
+      "description": "The authorized scope at time of execution"
+    }
+  },
+  "additionalProperties": false
+}

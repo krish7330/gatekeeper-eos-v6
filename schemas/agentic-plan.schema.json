@@ -1,0 +1,160 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/krishanumala/gatekeeper-eos-v6/schemas/agentic-plan.schema.json",
+  "title": "Agentic Test Plan Configuration",
+  "description": "Extends a signed test plan with an autonomous agentic reasoning loop. Defines how the agent selects actions, tracks state, and when to stop.",
+  "type": "object",
+  "required": ["enabled"],
+  "properties": {
+    "enabled": {
+      "type": "boolean",
+      "description": "Enable the agentic reasoning loop. When false, the session follows a linear pre-planned script."
+    },
+    "max_steps": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 500,
+      "default": 100,
+      "description": "Absolute maximum number of atomic actions the agent may take before forced stop."
+    },
+    "max_time_seconds": {
+      "type": "integer",
+      "minimum": 60,
+      "default": 3600,
+      "description": "Maximum wall-clock time in seconds before the agent is halted."
+    },
+    "max_duration": {
+      "type": "string",
+      "format": "duration",
+      "description": "Alternative stop condition — ISO 8601 duration (e.g. PT1H for 1 hour) converted to internal max_time_seconds."
+    },
+    "decision_strategy": {
+      "type": "string",
+      "enum": ["llm", "rule", "hybrid"],
+      "default": "llm",
+      "description": "How the agent selects its next action: 'llm' uses an LLM prompt, 'rule' uses a deterministic rule engine, 'hybrid' uses both with fallback."
+    },
+    "llm_prompt": {
+      "type": "string",
+      "minLength": 50,
+      "description": "System prompt template for the LLM action selector. May reference allowed_tools, authorized_assets, objective via Jinja2-style placeholders."
+    },
+    "llm_prompt_template": {
+      "type": "string",
+      "description": "Alias for llm_prompt. Prompt template with variables: {{ allowed_tools }}, {{ authorized_assets }}, {{ objective }}, {{ world_model }}, {{ step }}."
+    },
+    "rule_engine_config": {
+      "type": "object",
+      "description": "Configuration for deterministic rule-based strategy (optional). Allows customizing rule phases, priorities, and fallback behavior.",
+      "properties": {
+        "phase_order": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Custom ordering of exploration phases (e.g. recon, fingerprint, vuln, report)"
+        },
+        "max_retries_per_phase": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 3
+        },
+        "fallback_on_empty": {
+          "type": "string",
+          "default": "report",
+          "description": "Phase to switch to when the current phase produces no new findings"
+        }
+      },
+      "additionalProperties": true
+    },
+    "state_schema": {
+      "type": "object",
+      "description": "JSON Schema defining the structure of the agent's world model state. Tracks discovered assets, vulnerabilities, tested paths.",
+      "properties": {
+        "type": { "type": "string", "const": "object" },
+        "properties": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "stop_on_finding": {
+      "oneOf": [
+        { "type": "string", "enum": ["none", "critical", "high", "medium", "low"] },
+        { "type": "array", "items": { "type": "string", "enum": ["none", "critical", "high", "medium", "low"] } }
+      ],
+      "default": "none",
+      "description": "Stop immediately when a finding of this severity or higher is confirmed. Can be a single severity or list of severities."
+    },
+    "stop_on_criteria_met": {
+      "type": "boolean",
+      "default": true,
+      "description": "Stop when all success_criteria from the test plan are satisfied."
+    },
+    "stop_conditions": {
+      "type": "array",
+      "description": "Additional stop triggers beyond max_steps and max_time. Each condition defines a type and optional value.",
+      "items": {
+        "type": "object",
+        "required": ["type"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["finding_severity", "success_criterion_met", "max_steps", "time_limit"]
+          },
+          "value": {
+            "type": "string",
+            "description": "Parameter for the condition. For finding_severity: severity level. For time_limit: ISO 8601 duration. For max_steps: integer as string. For success_criterion_met: not used."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "allow_human_in_the_loop": {
+      "type": "boolean",
+      "default": false,
+      "description": "If true, the orchestrator pauses and waits for human approval before each high-impact action (like exploitation)."
+    },
+    "agent_state_drift_check": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable DRIFT-AGENT-STATE: halt if the agent's world model diverges from confirmed evidence."
+    },
+    "evidence_log_reasoning": {
+      "type": "boolean",
+      "default": true,
+      "description": "Include the agent's reasoning trace in the evidence log for auditability."
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "finding_summary": {
+      "type": "object",
+      "description": "Summary of a single security finding discovered by the agent.",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Short description of the finding (e.g. 'Open SSH port on 10.0.0.10')."
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["info", "low", "medium", "high", "critical"],
+          "description": "Risk level of the finding."
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Confidence score from 0 (speculative) to 1 (confirmed)."
+        },
+        "cve": {
+          "type": "string",
+          "pattern": "^CVE-\\d{4}-\\d{4,}$",
+          "description": "Optional CVE identifier if the finding maps to a known vulnerability."
+        },
+        "remediation": {
+          "type": "string",
+          "description": "Optional recommended fix or mitigation step."
+        }
+      },
+      "required": ["title", "severity"],
+      "additionalProperties": false
+    }
+  }
+}

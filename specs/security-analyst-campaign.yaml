@@ -1,0 +1,250 @@
+# =============================================================================
+# Agentic Security Analyst — Defensive Multi-Session Campaign
+# Autonomous cybersecurity analyst platform.
+# Operates on owned/authorized assets only. Read-only. No exploitation.
+# =============================================================================
+campaign_id: CAMP-SECANALYST-2026-Q3
+
+sessions:
+  # ---------------------------------------------------------------------------
+  # Session 1: Recon Agent — Asset inventory & discovery
+  # ---------------------------------------------------------------------------
+  - session_id: SESS-recon
+    plan:
+      plan_id: PLAN-RECON-01
+      authorized_assets:
+        - "10.0.0.0/24"        # owned internal network
+        - "dmz.corp.example.com"
+      allowed_tools:
+        - name: nmap
+          version: "7.95"
+          hash: "sha256:NMAP_HASH"
+          allowed_commands: ["-sn", "-sV", "--top-ports", "1000"]
+        - name: nuclei
+          version: "3.3.x"
+          hash: "sha256:NUCLEI_HASH"
+          allowed_commands: ["-target", "-silent", "-t", "technologies"]
+        - name: custom-collector
+          version: "1.0"
+          hash: "sha256:COLLECTOR_HASH"
+          allowed_commands: ["inventory", "config-dump"]
+      objective: "Inventory all active assets, open ports, running services, and OS/framework versions on the authorized network."
+      success_criteria:
+        - "All assets on 10.0.0.0/24 discovered and fingerprinted"
+        - "Service versions identified for at least 90% of open ports"
+        - "Configuration snapshots collected from all reachable hosts"
+      rollback_steps: []
+      approval_state: approved
+      expiry: "2026-09-30T23:59:59Z"
+      signature: "ed25519:RECON_SIG"
+    schedule:
+      start_at: "2026-07-01T02:00:00Z"
+      max_duration: "PT60M"
+    max_parallel_actions: 4
+
+  # ---------------------------------------------------------------------------
+  # Session 2: Vulnerability Agent — CVE correlation & patch verification
+  # ---------------------------------------------------------------------------
+  - session_id: SESS-vulnerability
+    plan:
+      plan_id: PLAN-VULN-01
+      authorized_assets:
+        - "10.0.0.0/24"
+      allowed_tools:
+        - name: grype
+          version: "0.80.x"
+          hash: "sha256:GRYPE_HASH"
+          allowed_commands: ["scan", "db", "check"]
+        - name: trivy
+          version: "0.55.x"
+          hash: "sha256:TRIVY_HASH"
+          allowed_commands: ["image", "fs", "config"]
+        - name: cve-api-client
+          version: "1.0"
+          hash: "sha256:CVE_API_HASH"
+          allowed_commands: ["query-cve", "correlate", "risk-score"]
+      objective: "Correlate discovered services and versions against known CVEs. Verify patch status. Score and prioritize vulnerabilities by CVSS and exploitability."
+      success_criteria:
+        - "100% of discovered services correlated against CVE database"
+        - "Patch status verified for all critical-severity findings"
+        - "Risk scores computed and ranked for prioritization"
+      rollback_steps: []
+      approval_state: approved
+      expiry: "2026-09-30T23:59:59Z"
+      signature: "ed25519:VULN_SIG"
+    schedule:
+      start_at: "2026-07-01T03:15:00Z"
+      deadline: "2026-07-01T05:00:00Z"
+    dependencies:
+      - SESS-recon
+    max_parallel_actions: 3
+
+  # ---------------------------------------------------------------------------
+  # Session 3: Threat Intelligence Agent — IOC matching & enrichment
+  # ---------------------------------------------------------------------------
+  - session_id: SESS-threat-intel
+    plan:
+      plan_id: PLAN-THREAT-01
+      authorized_assets:
+        - "10.0.0.0/24"
+        - "dmz.corp.example.com"
+      allowed_tools:
+        - name: ioc-ingestor
+          version: "1.0"
+          hash: "sha256:IOC_HASH"
+          allowed_commands: ["ingest-feed", "match", "enrich"]
+        - name: mitre-client
+          version: "1.0"
+          hash: "sha256:MITRE_HASH"
+          allowed_commands: ["technique-lookup", "mapping"]
+        - name: threat-feed-client
+          version: "1.0"
+          hash: "sha256:FEED_HASH"
+          allowed_commands: ["pull-alienvault", "pull-misp", "pull-recorded-future"]
+      objective: "Ingest threat intelligence feeds, match IOCs against discovered assets and vulnerabilities, identify active threat campaigns and TTPs relevant to the environment."
+      success_criteria:
+        - "IOCs matched against all discovered IPs, domains, and hashes"
+        - "MITRE ATT&CK techniques mapped to each vulnerability"
+        - "Threat actor profiles generated for any active campaigns detected"
+      rollback_steps: []
+      approval_state: approved
+      expiry: "2026-09-30T23:59:59Z"
+      signature: "ed25519:THREAT_SIG"
+    schedule:
+      start_at: "2026-07-01T04:30:00Z"
+      deadline: "2026-07-01T06:30:00Z"
+    dependencies:
+      - SESS-vulnerability
+    max_parallel_actions: 2
+
+  # ---------------------------------------------------------------------------
+  # Session 4: Detection Agent — Rule generation & monitoring setup
+  # ---------------------------------------------------------------------------
+  - session_id: SESS-detection
+    plan:
+      plan_id: PLAN-DETECT-01
+      authorized_assets:
+        - "10.0.0.0/24"
+      allowed_tools:
+        - name: sigma-generator
+          version: "1.0"
+          hash: "sha256:SIGMA_HASH"
+          allowed_commands: ["generate", "validate", "convert"]
+        - name: kql-generator
+          version: "1.0"
+          hash: "sha256:KQL_HASH"
+          allowed_commands: ["generate-sentinel", "generate-defender"]
+        - name: anomaly-detector
+          version: "1.0"
+          hash: "sha256:ANOM_HASH"
+          allowed_commands: ["baseline", "threshold", "alert-rule"]
+      objective: "Generate detection rules (Sigma, KQL) based on identified vulnerabilities and threat intel. Create SIEM queries, anomaly baselines, and alert thresholds for the security monitoring stack."
+      success_criteria:
+        - "Detection rules generated for all critical-severity findings"
+        - "SIEM queries validated and exportable to Sentinel/Defender"
+        - "Anomaly baselines established for all monitored services"
+      rollback_steps: []
+      approval_state: approved
+      expiry: "2026-09-30T23:59:59Z"
+      signature: "ed25519:DETECT_SIG"
+    schedule:
+      start_at: "2026-07-01T06:00:00Z"
+      deadline: "2026-07-01T08:00:00Z"
+    dependencies:
+      - SESS-threat-intel
+    max_parallel_actions: 3
+
+  # ---------------------------------------------------------------------------
+  # Session 5: Incident Response Agent — Playbook generation & triage prep
+  # ---------------------------------------------------------------------------
+  - session_id: SESS-ir
+    plan:
+      plan_id: PLAN-IR-01
+      authorized_assets:
+        - "10.0.0.0/24"
+      allowed_tools:
+        - name: playbook-generator
+          version: "1.0"
+          hash: "sha256:PLAYBOOK_HASH"
+          allowed_commands: ["generate-ir", "generate-soc", "map-mitre"]
+        - name: evidence-collector
+          version: "1.0"
+          hash: "sha256:EVIDENCE_HASH"
+          allowed_commands: ["collect-logs", "collect-memory", "collect-network"]
+        - name: report-generator
+          version: "1.0"
+          hash: "sha256:REPORT_HASH"
+          allowed_commands: ["executive-summary", "technical-report", "timeline"]
+      objective: "Generate incident response playbooks mapped to detected threats and vulnerabilities. Prepare evidence collection procedures and triage workflows for the SOC team."
+      success_criteria:
+        - "IR playbooks generated for each threat scenario"
+        - "Evidence collection procedures documented and tool-ready"
+        - "Triage priority matrix established"
+      rollback_steps: []
+      approval_state: approved
+      expiry: "2026-09-30T23:59:59Z"
+      signature: "ed25519:IR_SIG"
+    schedule:
+      start_at: "2026-07-01T07:30:00Z"
+      deadline: "2026-07-01T09:30:00Z"
+    dependencies:
+      - SESS-detection
+
+  # ---------------------------------------------------------------------------
+  # Session 6: Compliance Agent — Audit preparation & control mapping
+  # ---------------------------------------------------------------------------
+  - session_id: SESS-compliance
+    plan:
+      plan_id: PLAN-COMPLIANCE-01
+      authorized_assets:
+        - "10.0.0.0/24"
+      allowed_tools:
+        - name: cis-benchmarker
+          version: "1.0"
+          hash: "sha256:CIS_HASH"
+          allowed_commands: ["check", "score", "remediate"]
+        - name: nist-mapper
+          version: "1.0"
+          hash: "sha256:NIST_HASH"
+          allowed_commands: ["map-controls", "gap-analysis", "evidence"]
+        - name: audit-prep
+          version: "1.0"
+          hash: "sha256:AUDIT_HASH"
+          allowed_commands: ["generate-artifacts", "sox-review", "iso-checklist"]
+      objective: "Map all findings, controls, and remediations to compliance frameworks (CIS, NIST, ISO 27001). Generate audit artifacts, evidence packages, and compliance gap analysis."
+      success_criteria:
+        - "All findings mapped to applicable CIS benchmarks"
+        - "NIST 800-53 control coverage documented"
+        - "ISO 27001 evidence package generated and audit-ready"
+      rollback_steps: []
+      approval_state: approved
+      expiry: "2026-09-30T23:59:59Z"
+      signature: "ed25519:COMPLIANCE_SIG"
+    schedule:
+      start_at: "2026-07-01T09:00:00Z"
+      deadline: "2026-07-01T12:00:00Z"
+    dependencies:
+      - SESS-ir
+
+# ---------------------------------------------------------------------------
+# Global drift rules — halt on any unauthorized expansion
+# ---------------------------------------------------------------------------
+global_drift_rules:
+  - id: DRIFT-TARGET
+    description: "Scanned asset list must not expand beyond authorized scope."
+    action: HALT
+  - id: DRIFT-TOOLS
+    description: "All tools must match approved version and hash. No unapproved tools."
+    action: HALT
+  - id: DRIFT-NET
+    description: "Network scan range must remain within 10.0.0.0/24. No exfiltration."
+    action: HALT
+  - id: DRIFT-SCHEMA
+    description: "Output schema violations are warnings only."
+    action: LOG_ONLY
+  - id: DRIFT-PLAN
+    description: "Plan tampering (signature mismatch) stops execution immediately."
+    action: HALT
+  - id: DRIFT-EXPIRY
+    description: "No session may continue past the campaign expiry date."
+    action: HALT
