@@ -37,7 +37,7 @@ from gatekeeper_eos_v6.agentic import (
     parse_iso_duration,
     run_agent_loop,
 )
-from gatekeeper_eos_v6.providers import OpenAIProvider, AnthropicProvider, GoogleProvider, create_llm_provider, RateLimiter, _call_with_retry, _is_retryable_error
+from gatekeeper_eos_v6.providers import OpenAIProvider, AnthropicProvider, GoogleProvider, create_llm_provider, RateLimiter, CircuitBreaker, CircuitState, _call_with_retry, _is_retryable_error
 
 
 # ===========================================================================
@@ -3881,3 +3881,807 @@ class TestFromAgenticConfigParameterForwarding:
             assert "api_key" not in call_kwargs
             assert "base_url" not in call_kwargs
             assert "max_retries" not in call_kwargs
+# ===========================================================================
+# CircuitBreaker
+# ===========================================================================
+
+
+class TestCircuitBreaker:
+    """Tests for the CircuitBreaker token-bucket failure isolation."""
+
+    def test_initial_state_closed(self):
+        """CircuitBreaker starts in CLOSED state."""
+        cb = CircuitBreaker()
+        assert cb.state == CircuitState.CLOSED
+        assert cb.closed is True
+        assert cb.open is False
+        assert cb.failure_count == 0
+
+    def test_opens_after_threshold_failures(self):
+        """After failure_threshold consecutive failures, circuit opens."""
+        cb = CircuitBreaker(failure_threshold=3, recovery_timeout=999)
+
+        def _fail() -> str:
+            raise ValueError("API error")
+
+        # Failures 1 and 2: still closed
+        for _ in range(2):
+            with pytest.raises(ValueError):
+                cb.call(_fail)
+        assert cb.failure_count == 2
+        assert cb.state == CircuitState.CLOSED
+
+        # Failure 3: circuit opens
+        with pytest.raises(ValueError):
+            cb.call(_fail)
+        assert cb.failure_count == 3
+        assert cb.state == CircuitState.OPEN
+        assert cb.open is True
+
+    def test_open_rejects_calls(self):
+        """Open circuit returns fallback instead of calling the function."""
+        cb = CircuitBreaker(failure_threshold=1, recovery_timeout=999)
+
+        def _fail() -> str:
+            raise ValueError("error")
+
+        # Open the circuit
+        with pytest.raises(ValueError):
+            cb.call(_fail)
+
+        # Now circuit is open -> returns fallback
+        result = cb.call(_fail, fallback="fallback_val")
+        assert result == "fallback_val"
+        assert cb.open is True
+
+    def test_half_open_after_recovery_timeout(self):
+        """After recovery_timeout, circuit transitions to HALF_OPEN."""
+        cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.01)
+
+        def _fail() -> str:
+            raise ValueError("error")
+
+        # Open the circuit
+        with pytest.raises(ValueError):
+            cb.call(_fail)
+
+        assert cb.state == CircuitState.OPEN
+
+        # Wait for recovery timeout
+        time.sleep(0.02)
+
+        # State should now be half-open
+        assert cb.state == CircuitState.HALF_OPEN
+
+    def test_half_open_success_closes_circuit(self):
+        """A successful call in half-open state closes the circuit."""
+        cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.01)
+
+        def _fail() -> str:
+            raise ValueError("error")
+
+        # Open the circuit
+        with pytest.raises(ValueError):
+            cb.call(_fail)
+
+        time.sleep(0.02)
+
+        # Now half-open - successful call should close
+        def _succeed() -> str:
+            return "success"
+
+        result = cb.call(_succeed)
+        assert result == "success"
+        assert cb.state == CircuitState.CLOSED
+        assert cb.failure_count == 0
+
+    def test_half_open_failure_opens_again(self):
+        """A failed call in half-open state opens the circuit again after max retries."""
+        cb = CircuitBreaker(
+            failure_threshold=1,
+            recovery_timeout=0.01,
+            half_open_max_retries=2,
+        )
+
+        def _fail() -> str:
+            raise ValueError("error")
+
+        # Open the circuit
+        with pytest.raises(ValueError):
+            cb.call(_fail)
+
+        time.sleep(0.02)
+
+        # Half-open, first failure -> still half-open (retries left)
+        with pytest.raises(ValueError):
+            cb.call(_fail)
+        assert cb.state == CircuitState.HALF_OPEN
+
+        # Second failure -> opens again
+        with pytest.raises(ValueError):
+            cb.call(_fail)
+        assert cb.state == CircuitState.OPEN
+
+    def test_reset_closes_circuit(self):
+        """reset() forces the circuit back to CLOSED."""
+        cb = CircuitBreaker(failure_threshold=2, recovery_timeout=999)
+
+        def _fail() -> str:
+            raise ValueError("error")
+
+        for _ in range(2):
+            with pytest.raises(ValueError):
+                cb.call(_fail)
+
+        assert cb.state == CircuitState.OPEN
+
+        cb.reset()
+        assert cb.state == CircuitState.CLOSED
+        assert cb.failure_count == 0
+        assert cb.closed is True
+
+    def test_success_resets_failure_count(self):
+        """A successful call in CLOSED state resets the failure count."""
+        cb = CircuitBreaker(failure_threshold=5, recovery_timeout=999)
+
+        def _fail() -> str:
+            raise ValueError("error")
+
+        def _succeed() -> str:
+            return "ok"
+
+        for _ in range(3):
+            with pytest.raises(ValueError):
+                cb.call(_fail)
+
+        assert cb.failure_count == 3
+
+        # Success resets
+        cb.call(_succeed)
+        assert cb.failure_count == 0
+        assert cb.state == CircuitState.CLOSED
+
+    def test_success_after_multiple_failures_closes(self):
+        """Test full cycle: CLOSED -> failures -> OPEN -> timeout -> HALF_OPEN -> success -> CLOSED."""
+        cb = CircuitBreaker(failure_threshold=2, recovery_timeout=0.01)
+
+        def _fail() -> str:
+            raise ValueError("error")
+
+        def _succeed() -> str:
+            return "ok"
+
+        # Phase 1: CLOSED -> OPEN
+        with pytest.raises(ValueError):
+            cb.call(_fail)
+        with pytest.raises(ValueError):
+            cb.call(_fail)
+        assert cb.state == CircuitState.OPEN
+
+        # Phase 2: Wait -> HALF_OPEN
+        time.sleep(0.02)
+        assert cb.state == CircuitState.HALF_OPEN
+
+        # Phase 3: success -> CLOSED
+        result = cb.call(_succeed)
+        assert result == "ok"
+        assert cb.state == CircuitState.CLOSED
+
+# ===========================================================================
+# Integration: breaker + rate limiter combined
+# ===========================================================================
+
+
+class TestCircuitBreakerRateLimiterIntegration:
+    """Tests that CircuitBreaker and RateLimiter work together correctly."""
+
+    def test_breaker_and_limiter_coexist(self, monkeypatch):
+        """RateLimiter and CircuitBreaker both configured and working together."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+
+            limiter = RateLimiter(capacity=100, tokens_per_second=1000.0)
+            cb = CircuitBreaker(failure_threshold=3, recovery_timeout=0.1)
+
+            provider = OpenAIProvider(
+                max_retries=0,
+                rate_limiter=limiter,
+                circuit_breaker=cb,
+            )
+
+            # Circuit is CLOSED -> calls go through
+            mock_choice = unittest.mock.MagicMock()
+            mock_choice.message.content = '{"tool": "test", "command": "run"}'
+            mock_response = unittest.mock.MagicMock()
+            mock_response.choices = [mock_choice]
+            mock_client.chat.completions.create.return_value = mock_response
+
+            result = provider.generate("test 1")
+            assert result != ""  # Goes through
+            assert provider.call_count == 1
+
+            # Still CLOSED after success
+            assert cb.state == CircuitState.CLOSED
+
+    def test_breaker_opens_after_rate_limiter_and_failures(self, monkeypatch):
+        """RateLimiter passes, then CircuitBreaker opens after failures."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+
+            limiter = RateLimiter(capacity=100, tokens_per_second=1000.0)
+            cb = CircuitBreaker(failure_threshold=2, recovery_timeout=0.1)
+
+            provider = OpenAIProvider(
+                max_retries=0,
+                rate_limiter=limiter,
+                circuit_breaker=cb,
+            )
+
+            # Exhaust circuit: 2 failures
+            mock_client.chat.completions.create.side_effect = Exception("API error")
+            for i in range(2):
+                result = provider.generate(f"fail {i}")
+                assert result == ""
+
+            # Circuit should be OPEN now
+            assert cb.state == CircuitState.OPEN
+            assert provider.call_count == 2
+
+            # Next call: circuit OPEN -> fast-rejects (call_count still incremented in generate())
+            result = provider.generate("should fast reject")
+            assert result == ""
+            assert provider.call_count == 3
+            assert mock_client.chat.completions.create.call_count == 2  # Real API call was blocked
+
+    def test_breaker_limiter_from_yaml_config(self, sample_allowed_tools, sample_authorized_assets):
+        """from_agentic_config with both rate_limiter_config and circuit_breaker_config."""
+        config = {
+            "enabled": True,
+            "llm_provider_config": {
+                "provider_type": "openai",
+                "model": "gpt-4o-mini",
+                "api_key": "sk-test-key",
+                "max_retries": 2,
+                "temperature": 0.2,
+                "rate_limiter_config": {
+                    "capacity": 50,
+                    "tokens_per_second": 5.0,
+                },
+                "circuit_breaker_config": {
+                    "failure_threshold": 3,
+                    "recovery_timeout": 30.0,
+                    "half_open_max_retries": 2,
+                },
+            },
+        }
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+
+            agent = AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Integration test",
+            )
+
+            assert agent.llm_provider is not None
+            provider = agent.llm_provider
+            assert provider._rate_limiter is not None
+            assert provider._circuit_breaker is not None
+            assert provider._circuit_breaker._failure_threshold == 3
+            assert provider._circuit_breaker._recovery_timeout == 30.0
+            assert provider._circuit_breaker._half_open_max_retries == 2
+
+    def test_breaker_limiter_defaults_with_empty_configs(self, sample_allowed_tools, sample_authorized_assets):
+        """Empty dicts for rate_limiter_config and circuit_breaker_config use defaults."""
+        config = {
+            "enabled": True,
+            "llm_provider_config": {
+                "provider_type": "openai",
+                "model": "gpt-4o-mini",
+                "api_key": "sk-test-key",
+                "max_retries": 2,
+                "rate_limiter_config": {},
+                "circuit_breaker_config": {},
+            },
+        }
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+
+            agent = AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Defaults test",
+            )
+
+            assert agent.llm_provider is not None
+            provider = agent.llm_provider
+            assert provider._rate_limiter is not None
+            assert provider._circuit_breaker is not None
+            # Default values
+            assert provider._circuit_breaker._failure_threshold == 5
+            assert provider._circuit_breaker._recovery_timeout == 60.0
+
+
+# ===========================================================================
+# from_agentic_config — rate limiter & circuit breaker config forwarding
+# ===========================================================================
+
+
+class TestFromAgenticConfigRateLimiterAndCircuitBreaker:
+    """Tests that from_agentic_config correctly parses rate_limiter_config
+    and circuit_breaker_config from llm_provider_config."""
+
+    def test_openai_rate_limiter_config(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """rate_limiter_config values are forwarded to OpenAIProvider."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+
+            mock_choice = unittest.mock.MagicMock()
+            mock_choice.message.content = '{"tool": "test", "command": "run"}'
+            mock_response = unittest.mock.MagicMock()
+            mock_response.choices = [mock_choice]
+            mock_client.chat.completions.create.return_value = mock_response
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "provider_type": "openai",
+                    "rate_limiter_config": {
+                        "capacity": 30,
+                        "tokens_per_second": 2.0,
+                    },
+                },
+            }
+            agent = AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+            assert agent.config_llm_provider is not None
+            rl = agent.llm_provider._rate_limiter
+            assert rl._capacity == 30
+            assert rl._tokens_per_second == 2.0
+
+    def test_openai_circuit_breaker_config(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """circuit_breaker_config values are forwarded to OpenAIProvider."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+
+            mock_choice = unittest.mock.MagicMock()
+            mock_choice.message.content = '{"tool": "test", "command": "run"}'
+            mock_response = unittest.mock.MagicMock()
+            mock_response.choices = [mock_choice]
+            mock_client.chat.completions.create.return_value = mock_response
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "provider_type": "openai",
+                    "circuit_breaker_config": {
+                        "failure_threshold": 3,
+                        "recovery_timeout": 15.0,
+                        "half_open_max_retries": 2,
+                    },
+                },
+            }
+            agent = AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+            assert agent.config_llm_provider is not None
+            cb = agent.llm_provider._circuit_breaker
+            assert cb._failure_threshold == 3
+            assert cb._recovery_timeout == 15.0
+            assert cb._half_open_max_retries == 2
+
+    def test_openai_both_configs(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """Both rate_limiter_config and circuit_breaker_config forwarded together."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+
+            mock_choice = unittest.mock.MagicMock()
+            mock_choice.message.content = '{"tool": "test", "command": "run"}'
+            mock_response = unittest.mock.MagicMock()
+            mock_response.choices = [mock_choice]
+            mock_client.chat.completions.create.return_value = mock_response
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "provider_type": "openai",
+                    "rate_limiter_config": {"capacity": 10, "tokens_per_second": 1.0},
+                    "circuit_breaker_config": {"failure_threshold": 2, "recovery_timeout": 5.0},
+                },
+            }
+            agent = AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+            assert agent.config_llm_provider is not None
+            assert agent.llm_provider._rate_limiter is not None
+            assert agent.llm_provider._circuit_breaker is not None
+
+    def test_openai_no_configs(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """No rate_limiter_config or circuit_breaker_config -> not created."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+
+            mock_choice = unittest.mock.MagicMock()
+            mock_choice.message.content = '{"tool": "test", "command": "run"}'
+            mock_response = unittest.mock.MagicMock()
+            mock_response.choices = [mock_choice]
+            mock_client.chat.completions.create.return_value = mock_response
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "provider_type": "openai",
+                },
+            }
+            agent = AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+            assert agent.config_llm_provider is not None
+            assert agent.llm_provider._rate_limiter is None
+            assert agent.llm_provider._circuit_breaker is None
+
+    def test_anthropic_rate_limiter_config(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """rate_limiter_config values are forwarded to AnthropicProvider."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+        with unittest.mock.patch("anthropic.Anthropic") as mock_anthropic:
+            mock_client = unittest.mock.MagicMock()
+            mock_anthropic.return_value = mock_client
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "provider_type": "anthropic",
+                    "rate_limiter_config": {
+                        "capacity": 20,
+                        "tokens_per_second": 5.0,
+                    },
+                },
+            }
+            agent = AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+            assert agent.config_llm_provider is not None
+            rl = agent.llm_provider._rate_limiter
+            assert rl._capacity == 20
+            assert rl._tokens_per_second == 5.0
+
+    def test_anthropic_circuit_breaker_config(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """circuit_breaker_config values are forwarded to AnthropicProvider."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+        with unittest.mock.patch("anthropic.Anthropic") as mock_anthropic:
+            mock_client = unittest.mock.MagicMock()
+            mock_anthropic.return_value = mock_client
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "provider_type": "anthropic",
+                    "circuit_breaker_config": {
+                        "failure_threshold": 4,
+                        "recovery_timeout": 20.0,
+                    },
+                },
+            }
+            agent = AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+            assert agent.config_llm_provider is not None
+            cb = agent.llm_provider._circuit_breaker
+            assert cb._failure_threshold == 4
+            assert cb._recovery_timeout == 20.0
+
+    def test_google_rate_limiter_config(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """rate_limiter_config values are forwarded to GoogleProvider."""
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
+
+        with unittest.mock.patch("google.genai.Client") as mock_genai:
+            mock_client = unittest.mock.MagicMock()
+            mock_genai.return_value = mock_client
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "provider_type": "google",
+                    "rate_limiter_config": {
+                        "capacity": 15,
+                        "tokens_per_second": 3.0,
+                    },
+                },
+            }
+            agent = AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+            assert agent.config_llm_provider is not None
+            rl = agent.llm_provider._rate_limiter
+            assert rl._capacity == 15
+            assert rl._tokens_per_second == 3.0
+
+    def test_google_circuit_breaker_config(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """circuit_breaker_config values are forwarded to GoogleProvider."""
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
+
+        with unittest.mock.patch("google.genai.Client") as mock_genai:
+            mock_client = unittest.mock.MagicMock()
+            mock_genai.return_value = mock_client
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "provider_type": "google",
+                    "circuit_breaker_config": {
+                        "failure_threshold": 5,
+                        "recovery_timeout": 30.0,
+                    },
+                },
+            }
+            agent = AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+            assert agent.config_llm_provider is not None
+            cb = agent.llm_provider._circuit_breaker
+            assert cb._failure_threshold == 5
+            assert cb._recovery_timeout == 30.0
+
+
+
+# ===========================================================================
+# from_agentic_config — rate limiter & circuit breaker config forwarding
+# ===========================================================================
+
+
+class TestFromAgenticConfigRateLimiterAndCircuitBreaker:
+    """Tests that from_agentic_config correctly parses rate_limiter_config
+    and circuit_breaker_config from llm_provider_config."""
+
+    def test_openai_rate_limiter_config(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """rate_limiter_config creates a RateLimiter with correct params."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("gatekeeper_eos_v6.providers.OpenAIProvider") as mock_prov:
+            mock_instance = unittest.mock.MagicMock()
+            mock_prov.return_value = mock_instance
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "type": "openai",
+                    "rate_limiter_config": {
+                        "capacity": 100,
+                        "tokens_per_second": 10.0,
+                    },
+                },
+            }
+            AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+
+            call_kwargs = mock_prov.call_args.kwargs
+            assert "rate_limiter" in call_kwargs
+            limiter = call_kwargs["rate_limiter"]
+            assert limiter._capacity == 100
+            assert limiter._tokens_per_second == 10.0
+
+    def test_openai_rate_limiter_defaults(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """rate_limiter_config defaults: capacity=60, tokens_per_second=3.0."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("gatekeeper_eos_v6.providers.OpenAIProvider") as mock_prov:
+            mock_instance = unittest.mock.MagicMock()
+            mock_prov.return_value = mock_instance
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "type": "openai",
+                    "rate_limiter_config": {},  # empty -> defaults
+                },
+            }
+            AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+
+            call_kwargs = mock_prov.call_args.kwargs
+            assert "rate_limiter" in call_kwargs
+            limiter = call_kwargs["rate_limiter"]
+            assert limiter._capacity == 60
+            assert limiter._tokens_per_second == 3.0
+
+    def test_anthropic_circuit_breaker_config(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """circuit_breaker_config creates a CircuitBreaker with correct params."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+        with unittest.mock.patch("gatekeeper_eos_v6.providers.AnthropicProvider") as mock_prov:
+            mock_instance = unittest.mock.MagicMock()
+            mock_prov.return_value = mock_instance
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "type": "anthropic",
+                    "circuit_breaker_config": {
+                        "failure_threshold": 10,
+                        "recovery_timeout": 120.0,
+                        "half_open_max_retries": 5,
+                    },
+                },
+            }
+            AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+
+            call_kwargs = mock_prov.call_args.kwargs
+            assert "circuit_breaker" in call_kwargs
+            cb = call_kwargs["circuit_breaker"]
+            assert cb._failure_threshold == 10
+            assert cb._recovery_timeout == 120.0
+            assert cb._half_open_max_retries == 5
+
+    def test_circuit_breaker_config_defaults(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """circuit_breaker_config defaults: failure_threshold=5, recovery_timeout=60, half_open_max_retries=3."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("gatekeeper_eos_v6.providers.OpenAIProvider") as mock_prov:
+            mock_instance = unittest.mock.MagicMock()
+            mock_prov.return_value = mock_instance
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "type": "openai",
+                    "circuit_breaker_config": {},  # empty -> defaults
+                },
+            }
+            AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+
+            call_kwargs = mock_prov.call_args.kwargs
+            assert "circuit_breaker" in call_kwargs
+            cb = call_kwargs["circuit_breaker"]
+            assert cb._failure_threshold == 5
+            assert cb._recovery_timeout == 60.0
+            assert cb._half_open_max_retries == 3
+
+    def test_both_rate_limiter_and_circuit_breaker(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """Both rate_limiter_config and circuit_breaker_config can be specified together."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("gatekeeper_eos_v6.providers.OpenAIProvider") as mock_prov:
+            mock_instance = unittest.mock.MagicMock()
+            mock_prov.return_value = mock_instance
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "type": "openai",
+                    "rate_limiter_config": {"capacity": 30, "tokens_per_second": 5.0},
+                    "circuit_breaker_config": {"failure_threshold": 3, "recovery_timeout": 30.0},
+                },
+            }
+            AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+
+            call_kwargs = mock_prov.call_args.kwargs
+            assert "rate_limiter" in call_kwargs
+            assert "circuit_breaker" in call_kwargs
+            assert call_kwargs["rate_limiter"]._capacity == 30
+            assert call_kwargs["circuit_breaker"]._failure_threshold == 3
+
+    def test_no_rate_limiter_config_not_forwarded(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """Without rate_limiter_config, no rate_limiter is forwarded (provider uses default)."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("gatekeeper_eos_v6.providers.OpenAIProvider") as mock_prov:
+            mock_instance = unittest.mock.MagicMock()
+            mock_prov.return_value = mock_instance
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "type": "openai",
+                },
+            }
+            AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+
+            call_kwargs = mock_prov.call_args.kwargs
+            assert "rate_limiter" not in call_kwargs
+            assert "circuit_breaker" not in call_kwargs
+
+    def test_google_rate_limiter_and_circuit_breaker(self, monkeypatch, sample_allowed_tools, sample_authorized_assets):
+        """rate_limiter_config and circuit_breaker_config work with GoogleProvider."""
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-key")
+
+        with unittest.mock.patch("gatekeeper_eos_v6.providers.GoogleProvider") as mock_prov:
+            mock_instance = unittest.mock.MagicMock()
+            mock_prov.return_value = mock_instance
+
+            config = {
+                "enabled": True,
+                "llm_provider_config": {
+                    "type": "google",
+                    "rate_limiter_config": {"capacity": 20, "tokens_per_second": 2.0},
+                    "circuit_breaker_config": {"failure_threshold": 5},
+                },
+            }
+            AgentCore.from_agentic_config(
+                config, sample_allowed_tools, sample_authorized_assets,
+                objective="Test",
+            )
+
+            call_kwargs = mock_prov.call_args.kwargs
+            assert "rate_limiter" in call_kwargs
+            assert "circuit_breaker" in call_kwargs
+            assert call_kwargs["rate_limiter"]._capacity == 20
+            assert call_kwargs["circuit_breaker"]._failure_threshold == 5
+
+    def test_circuit_breaker_wired_in_providers_generate(self, monkeypatch):
+        """CircuitBreaker.call is invoked when a provider's generate() is called with circuit_breaker set."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+
+            mock_choice = unittest.mock.MagicMock()
+            mock_choice.message.content = '{"tool": "test", "command": "run"}'
+            mock_response = unittest.mock.MagicMock()
+            mock_response.choices = [mock_choice]
+            mock_client.chat.completions.create.return_value = mock_response
+
+            cb = CircuitBreaker(failure_threshold=3, recovery_timeout=999)
+            provider = OpenAIProvider(circuit_breaker=cb, max_retries=0)
+
+            # First call succeeds
+            result = provider.generate("test")
+            assert result != ""
+            assert cb.state == CircuitState.CLOSED
+
+            # Open the circuit
+            mock_client.chat.completions.create.side_effect = ValueError("API error")
+
+            for _ in range(3):
+                result = provider.generate("test")
+            # The circuit breaker will open after 3 failures,
+            # but generate will return "" for each call
+            # After opening, the circuit breaker returns fallback=""
+            assert cb.open is True

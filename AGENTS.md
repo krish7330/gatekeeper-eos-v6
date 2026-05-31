@@ -386,6 +386,72 @@ All production providers (OpenAI, Anthropic, Google) automatically apply:
 | **Non-retryable** | 400, 401, 403, 404, JSON decode errors |
 | **Metrics** | Each provider tracks `retry_count`, `total_retry_delay`, `last_rate_limit_hit` |
 
+### Custom Rate Limiter Config (YAML)
+
+Override the default token-bucket rate limiter per session by adding a
+`rate_limiter_config` block inside `llm_provider_config`:
+
+```yaml
+llm_provider_config:
+  type: openai
+  model: gpt-4o-mini
+  rate_limiter_config:
+    capacity: 120                # Max burst (default 60)
+    tokens_per_second: 5.0       # Steady-state refill (default 3.0)
+```
+
+For low-quota API tiers, reduce throughput:
+```yaml
+llm_provider_config:
+  type: anthropic
+  model: claude-sonnet-4-20250514
+  rate_limiter_config:
+    capacity: 10                 # Conservative burst
+    tokens_per_second: 1.0       # ~1 RPM steady state
+```
+
+### Circuit Breaker (YAML)
+
+A circuit breaker prevents cascading failures by fast-rejecting calls after
+repeated failures. Configure it per session inside `llm_provider_config`:
+
+```yaml
+llm_provider_config:
+  type: openai
+  model: gpt-4o-mini
+  circuit_breaker_config:
+    failure_threshold: 5         # Consecutive failures before opening (default 5)
+    recovery_timeout: 60.0       # Seconds before half-open retry (default 60)
+    half_open_max_retries: 3     # Test calls in half-open state (default 3)
+```
+
+**States**:
+
+| State | Behaviour |
+|-------|-----------|
+| **CLOSED** | Normal operation; failures increment a counter |
+| **OPEN** | All calls fast-reject with fallback (empty string); agent falls back to rule-based selection |
+| **HALF_OPEN** | Limited test calls allowed; success → CLOSED, failure → OPEN |
+
+**Example — aggressive circuit breaker for unstable endpoints**:
+```yaml
+llm_provider_config:
+  type: openai
+  model: llama-3.3-70b-versatile
+  base_url: https://api.groq.com/openai/v1
+  circuit_breaker_config:
+    failure_threshold: 3         # Open after 3 consecutive failures
+    recovery_timeout: 30.0       # Retry after 30 seconds
+    half_open_max_retries: 2     # 2 test calls before deciding
+  rate_limiter_config:
+    capacity: 20
+    tokens_per_second: 2.0
+```
+
+Both `rate_limiter_config` and `circuit_breaker_config` can be specified
+together (as above). They work with all three production providers (OpenAI,
+Anthropic, Google).
+
 ### Factory Usage (Python)
 
 ```python
@@ -422,6 +488,7 @@ reconnaissance, Claude for report generation, Gemini for cross-referencing.
 | `ValueError: Missing API key` | Env var not set | Export `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `GEMINI_API_KEY` |
 | Frequent 429 errors | Rate limit exceeded | Increase `max_retries`, reduce `tokens_per_second` in `RateLimiter`, or check provider quota |
 | Empty responses from `generate()` | API error (non-retryable) | Check `provider.retry_count` and `provider.last_rate_limit_hit` for diagnostics |
+| Consistent empty responses after initial failures | Circuit breaker is OPEN | Check `provider._circuit_breaker.state`, `failure_count`, and `_last_failure_time`. Increase `failure_threshold` or `recovery_timeout`, or call `circuit_breaker.reset()` manually |
 | Timeout errors | Network / slow model | Increase `max_retries` or use a faster model |
 
 ---

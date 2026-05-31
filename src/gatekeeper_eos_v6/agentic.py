@@ -1162,6 +1162,27 @@ class AgentCore:
                 if key in llm_provider_config:
                     llm_kwargs[key] = llm_provider_config[key]
 
+            # Parse optional rate_limiter_config
+            rate_limiter_config = llm_provider_config.get("rate_limiter_config")
+            if rate_limiter_config is not None:
+                from gatekeeper_eos_v6.providers import RateLimiter
+
+                llm_kwargs["rate_limiter"] = RateLimiter(
+                    capacity=rate_limiter_config.get("capacity", 60),
+                    tokens_per_second=rate_limiter_config.get("tokens_per_second", 3.0),
+                )
+
+            # Parse optional circuit_breaker_config
+            circuit_breaker_config = llm_provider_config.get("circuit_breaker_config")
+            if circuit_breaker_config is not None:
+                from gatekeeper_eos_v6.providers import CircuitBreaker
+
+                llm_kwargs["circuit_breaker"] = CircuitBreaker(
+                    failure_threshold=circuit_breaker_config.get("failure_threshold", 5),
+                    recovery_timeout=circuit_breaker_config.get("recovery_timeout", 60.0),
+                    half_open_max_retries=circuit_breaker_config.get("half_open_max_retries", 3),
+                )
+
             if provider_type == "openai":
                 # Lazy import to avoid circular dependency
                 from gatekeeper_eos_v6.providers import OpenAIProvider

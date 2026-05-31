@@ -28,6 +28,7 @@ import json
 import os
 import random
 import time
+import enum
 from collections.abc import Callable
 from typing import Any
 
@@ -227,6 +228,152 @@ def _is_retryable_error(exc: Exception) -> bool:
 _DEFAULT_RATE_LIMITER = RateLimiter(capacity=60, tokens_per_second=3.0)
 
 
+# ===========================================================================
+# Circuit breaker — prevents calls after repeated failures
+# ===========================================================================
+
+
+class CircuitState(enum.Enum):
+    """Circuit breaker state machine states."""
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
+
+
+class CircuitBreakerError(Exception):
+    """Raised when a call is rejected because the circuit is open."""
+
+
+class CircuitBreaker:
+    """Circuit breaker for LLM API calls.
+
+    Prevents cascading failures by fast-rejecting calls after a threshold of
+    consecutive failures.  After a recovery timeout the circuit transitions
+    to half-open, allowing a limited number of test calls.  If they succeed
+    the circuit closes; if they fail it opens again.
+
+    States
+    ------
+    CLOSED:
+        Normal operation.  Each failure increments a counter.  When the
+        counter reaches ``failure_threshold`` the circuit opens.
+    OPEN:
+        All calls are fast-rejected (return the configured fallback).
+        After ``recovery_timeout`` seconds the circuit transitions to
+        half-open automatically (lazy evaluation via ``.state``).
+    HALF_OPEN:
+        A limited number of test calls (``half_open_max_retries``) are
+        allowed through.  If one succeeds the circuit closes.  If all
+        fail the circuit opens again.
+
+    Parameters
+    ----------
+    failure_threshold:
+        Consecutive failures before the circuit opens (default 5).
+    recovery_timeout:
+        Seconds to wait before transitioning to half-open (default 60.0).
+    half_open_max_retries:
+        How many test calls to allow in half-open state (default 3).
+    """
+
+    def __init__(
+        self,
+        failure_threshold: int = 5,
+        recovery_timeout: float = 60.0,
+        half_open_max_retries: int = 3,
+    ) -> None:
+        self._failure_threshold = failure_threshold
+        self._recovery_timeout = recovery_timeout
+        self._half_open_max_retries = half_open_max_retries
+        self._state = CircuitState.CLOSED
+        self._failure_count = 0
+        self._last_failure_time = 0.0
+        self._half_open_retries = 0
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    @property
+    def state(self) -> CircuitState:
+        """Current circuit state (lazy OPEN → HALF_OPEN transition)."""
+        if self._state is CircuitState.OPEN:
+            if time.monotonic() - self._last_failure_time >= self._recovery_timeout:
+                self._state = CircuitState.HALF_OPEN
+                self._half_open_retries = 0
+        return self._state
+
+    @property
+    def failure_count(self) -> int:
+        return self._failure_count
+
+    @property
+    def closed(self) -> bool:
+        return self.state is CircuitState.CLOSED
+
+    @property
+    def open(self) -> bool:
+        return self.state is CircuitState.OPEN
+
+    def call(self, func: Callable[[], str], fallback: str = "") -> str:
+        """Execute *func* through the circuit breaker.
+
+        Parameters
+        ----------
+        func:
+            Zero-argument callable returning a string.
+        fallback:
+            Value returned when the circuit is open (default "").
+
+        Returns
+        -------
+        The result of *func* on success, or *fallback* if the circuit is
+        open.  Exceptions from *func* are re-raised after recording the
+        failure.
+        """
+        if self.state is CircuitState.OPEN:
+            return fallback
+
+        try:
+            result = func()
+            self._record_success()
+            return result
+        except CircuitBreakerError:
+            # Already recorded — just re-raise for the retry loop
+            raise
+        except Exception as exc:
+            self._record_failure()
+            raise
+
+    def reset(self) -> None:
+        """Manually close the circuit and reset all counters."""
+        self._state = CircuitState.CLOSED
+        self._failure_count = 0
+        self._last_failure_time = 0.0
+        self._half_open_retries = 0
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _record_success(self) -> None:
+        self._failure_count = 0
+        self._state = CircuitState.CLOSED
+        self._half_open_retries = 0
+
+    def _record_failure(self) -> None:
+        self._failure_count += 1
+        self._last_failure_time = time.monotonic()
+
+        if self._state is CircuitState.HALF_OPEN:
+            self._half_open_retries += 1
+            if self._half_open_retries >= self._half_open_max_retries:
+                self._state = CircuitState.OPEN
+                self._half_open_retries = 0
+        elif self._failure_count >= self._failure_threshold:
+            self._state = CircuitState.OPEN
+
+
 # ---------------------------------------------------------------------------
 # Default system prompt for action generation
 # ---------------------------------------------------------------------------
@@ -294,6 +441,7 @@ class OpenAIProvider(LLMProvider):
         base_url: str | None = None,
         max_retries: int = 3,
         rate_limiter: RateLimiter | None = None,
+        circuit_breaker: CircuitBreaker | None = None,
     ) -> None:
         super().__init__(model=model)
         from openai import OpenAI
@@ -314,6 +462,7 @@ class OpenAIProvider(LLMProvider):
         self._timeout = timeout
         self._max_retries = max_retries
         self._rate_limiter = rate_limiter or _DEFAULT_RATE_LIMITER
+        self._circuit_breaker = circuit_breaker
         self.call_count = 0
         self.last_prompt = ""
         self.last_raw_response: str = ""
@@ -360,8 +509,16 @@ class OpenAIProvider(LLMProvider):
 
             return ""
 
+        # Wrap with circuit breaker if configured
+        if self._circuit_breaker is not None:
+            def _cb_wrapped() -> str:
+                return self._circuit_breaker.call(_do_call, fallback="")
+            api_call: Callable[[], str] = _cb_wrapped
+        else:
+            api_call = _do_call
+
         result, retries, delay = _call_with_retry(
-            _do_call,
+            api_call,
             max_retries=self._max_retries,
             rate_limiter=self._rate_limiter,
         )
@@ -418,6 +575,7 @@ class AnthropicProvider(LLMProvider):
         base_url: str | None = None,
         max_retries: int = 3,
         rate_limiter: RateLimiter | None = None,
+        circuit_breaker: CircuitBreaker | None = None,
     ) -> None:
         super().__init__(model=model)
         from anthropic import Anthropic
@@ -438,6 +596,7 @@ class AnthropicProvider(LLMProvider):
         self._timeout = timeout
         self._max_retries = max_retries
         self._rate_limiter = rate_limiter or _DEFAULT_RATE_LIMITER
+        self._circuit_breaker = circuit_breaker
         self.call_count = 0
         self.last_prompt = ""
         self.last_raw_response: str = ""
@@ -484,8 +643,16 @@ class AnthropicProvider(LLMProvider):
 
             return ""
 
+        # Wrap with circuit breaker if configured
+        if self._circuit_breaker is not None:
+            def _cb_wrapped() -> str:
+                return self._circuit_breaker.call(_do_call, fallback="")
+            api_call: Callable[[], str] = _cb_wrapped
+        else:
+            api_call = _do_call
+
         result, retries, delay = _call_with_retry(
-            _do_call,
+            api_call,
             max_retries=self._max_retries,
             rate_limiter=self._rate_limiter,
         )
@@ -542,6 +709,7 @@ class GoogleProvider(LLMProvider):
         base_url: str | None = None,
         max_retries: int = 3,
         rate_limiter: RateLimiter | None = None,
+        circuit_breaker: CircuitBreaker | None = None,
     ) -> None:
         super().__init__(model=model)
         from google import genai
@@ -562,6 +730,7 @@ class GoogleProvider(LLMProvider):
         self._timeout = timeout
         self._max_retries = max_retries
         self._rate_limiter = rate_limiter or _DEFAULT_RATE_LIMITER
+        self._circuit_breaker = circuit_breaker
         self.call_count = 0
         self.last_prompt = ""
         self.last_raw_response: str = ""
@@ -607,8 +776,16 @@ class GoogleProvider(LLMProvider):
 
             return ""
 
+        # Wrap with circuit breaker if configured
+        if self._circuit_breaker is not None:
+            def _cb_wrapped() -> str:
+                return self._circuit_breaker.call(_do_call, fallback="")
+            api_call: Callable[[], str] = _cb_wrapped
+        else:
+            api_call = _do_call
+
         result, retries, delay = _call_with_retry(
-            _do_call,
+            api_call,
             max_retries=self._max_retries,
             rate_limiter=self._rate_limiter,
         )
