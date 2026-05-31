@@ -28,7 +28,7 @@ MAX_ROUNDS = {{ system.get("max_rounds", 3) }}
 
 async def main() -> None:
     """Run the reflection loop: generate → critique → revise → ..."""
-    user_input = os.environ.get("USER_INPUT", "{{ system.example_input }}")
+    user_input = os.environ.get("USER_INPUT", {{ system.example_input | default("") | tojson }})
     print(f"User: {user_input}\n")
     print("=" * 60)
 

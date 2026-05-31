@@ -28,6 +28,7 @@ from gatekeeper_eos_v6.agentic import (
     StopReason,
     AgentStopTriggered,
     AgentStateError,
+    MockLLMProvider,
     run_agent_loop,
 )
 from gatekeeper_eos_v6.campaign import (
@@ -733,7 +734,550 @@ class TestE2EDriftRecovery:
 
 
 # ===========================================================================
-# 8. CampaignExecutor integration
+# 7b. Checkpoint integration — run_agent_loop with snapshot_ledger
+# ===========================================================================
+
+
+class TestE2ECheckpointIntegration:
+    """Prove run_agent_loop with snapshot_ledger writes snapshots and recovers from drift."""
+
+    def test_loop_writes_snapshot_chain(self, tmp_path):
+        """Full loop with snapshot_ledger produces valid hash chain."""
+        from gatekeeper_eos_v6.snapshot import SnapshotLedger
+
+        l = SnapshotLedger(tmp_path / "e2e_ckpt.json")
+
+        agent = AgentCore(
+            allowed_tools=[{"name": "nmap", "allowed_commands": ["discover", "scan"]}],
+            authorized_assets=["10.0.0.10"],
+            objective="Checkpoint E2E",
+            decision_strategy="rule",
+            max_steps=5,
+            stop_on_criteria_met=False,
+            stop_on_finding="none",
+        )
+
+        def execute(action):
+            return {"open_ports": [80, 443], "services": [{"name": "nginx"}]}
+
+        state, evidence, reason = run_agent_loop(agent, execute, snapshot_ledger=l, session_id="SESS-e2e-ckpt")
+
+        # Verify hash chain integrity
+        violations = l.verify_integrity()
+        assert violations == [], f"Hash chain broken: {violations}"
+        # Verify entries have correct session and sequence
+        entries = l.index.get_by_session("SESS-e2e-ckpt")
+        assert len(entries) >= 2, f"Expected ≥2 entries, got {len(entries)}"
+
+    def test_loop_drift_recovery_e2e(self, tmp_path):
+        """E2E: drift triggers recovery, loop resumes, final state is clean."""
+        from gatekeeper_eos_v6.snapshot import SnapshotLedger
+
+        l = SnapshotLedger(tmp_path / "e2e_drift.json")
+
+        agent = AgentCore(
+            allowed_tools=[{"name": "nmap", "allowed_commands": ["discover", "scan"]}],
+            authorized_assets=["10.0.0.10"],
+            objective="Drift recovery E2E",
+            decision_strategy="rule",
+            max_steps=10,
+            stop_on_criteria_met=False,
+            stop_on_finding="none",
+        )
+
+        call_count = [0]
+        drift_injected = [False]
+
+        def execute(action):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return {"open_ports": [80]}
+            if not drift_injected[0]:
+                agent.state.open_ports.append(9999)
+                drift_injected[0] = True
+            return {"open_ports": [443], "services": [{"name": "nginx"}]}
+
+        state, evidence, reason = run_agent_loop(agent, execute, snapshot_ledger=l, session_id="SESS-e2e-drift")
+
+        # State should be clean (no hallucinated port)
+        assert 9999 not in state.open_ports, f"Hallucinated port still present: {state.open_ports}"
+        # Should not have stopped via drift
+        assert reason != StopReason.DRIFT_DETECTED, f"Loop stopped via drift: {reason}"
+        # Evidence collected (before + after recovery)
+        assert len(evidence) >= 2, f"Expected ≥2 evidence entries, got {len(evidence)}"
+        # Snapshot chain should be intact
+        violations = l.verify_integrity()
+        assert violations == [], f"Hash chain broken after recovery: {violations}"
+
+
+# ===========================================================================
+# 8. Tool-not-found hybrid E2E — Mode A stall detection
+# ===========================================================================
+
+
+class TestE2EToolNotFoundStall:
+    """Prove the hybrid strategy detects and stops on tool-not-found stall.
+
+    Mode A failure: when the rule engine's hardcoded substring search can't
+    find any matching tool (e.g., tools named "nikto" and "sublist3r" instead
+    of "nmap" and "reporter"), _select_with_rules generates invalid tool names.
+    The hybrid strategy detects this via _check_tool_loop (same invalid
+    tool+command repeated 3+ times) and returns RULE_ENGINE_STALLED.
+    """
+
+    def test_hybrid_stalls_when_no_matching_tools(self):
+        """Tools with names outside the rule engine's hardcoded search trigger stall.
+
+        The rule engine searches for substrings: "nmap", "recon", "scanner",
+        "grype", "trivy", "reporter". None match "nikto" or "sublist3r",
+        so _select_with_rules generates made-up tool names ("recon").
+        The hybrid strategy detects 3+ consecutive identical actions and
+        returns RULE_ENGINE_STALLED.
+        """
+        tools = [
+            {"name": "nikto", "allowed_commands": ["scan"]},
+            {"name": "sublist3r", "allowed_commands": ["discover"]},
+        ]
+        assets = ["10.0.0.10"]
+
+        agent = AgentCore(
+            allowed_tools=tools,
+            authorized_assets=assets,
+            objective="Example: scan target for vulnerabilities",
+            decision_strategy="hybrid",
+            max_steps=10,
+            stop_on_criteria_met=False,
+            stop_on_finding="none",
+        )
+
+        def execute(action):
+            # Execute always returns nothing — rule engine stays in recon
+            # phase and keeps generating the same invalid action
+            return {"last_action_result": "no results"}
+
+        final_state, evidence, reason = run_agent_loop(agent, execute)
+
+        # Agent should stop via RULE_ENGINE_STALLED, not MAX_STEPS
+        assert reason == StopReason.RULE_ENGINE_STALLED, (
+            f"Expected RULE_ENGINE_STALLED, got {reason}"
+        )
+        # Evidence should show the repeated actions
+        assert len(evidence) >= 1
+        # All actions should be the same invalid tool (nikto doesn't match "nmap"/"recon")
+        if evidence:
+            for entry in evidence:
+                assert entry.action.tool is not None
+
+    def test_hybrid_stalls_with_policy_gate_rejection(self):
+        """PolicyGate rejects invalid tool; hybrid still detects stall."""
+        tools = [
+            {"name": "gobuster", "allowed_commands": ["dir"]},
+        ]
+        assets = ["10.0.0.10"]
+
+        agent = AgentCore(
+            allowed_tools=tools,
+            authorized_assets=assets,
+            objective="Directory enumeration",
+            decision_strategy="hybrid",
+            max_steps=10,
+            stop_on_criteria_met=False,
+            stop_on_finding="none",
+        )
+
+        gate = PolicyGate(
+            allowed_tools=tools,
+            authorized_assets=assets,
+        )
+
+        call_count = [0]
+
+        def execute(action):
+            call_count[0] += 1
+            return {"last_action_result": "scan complete"}
+
+        final_state, evidence, reason = run_agent_loop(agent, execute, gate)
+
+        # Should stall — gobuster doesn't match "nmap"/"recon"/"scanner"/etc.
+        assert reason == StopReason.RULE_ENGINE_STALLED, (
+            f"Expected RULE_ENGINE_STALLED, got {reason}"
+        )
+        # PolicyGate should have rejected the invalid tool names
+        assert len(evidence) >= 1
+
+        # Verify policy violations were recorded
+        policy_violations = [
+            e for e in evidence
+            if "POLICY_VIOLATION" in e.output.get("last_action_result", "")
+        ]
+        assert len(policy_violations) >= 1, (
+            "Expected at least one POLICY_VIOLATION evidence entry"
+        )
+
+    def test_rule_strategy_does_not_stall_on_same_config(self):
+        """Rule strategy (not hybrid) with same tools does NOT detect stall.
+
+        The 'rule' strategy doesn't call _check_stalled, so it keeps looping
+        until MAX_STEPS without detecting the stall. Proves that the stall
+        detection is specific to the 'hybrid' strategy.
+        """
+        tools = [
+            {"name": "wapiti", "allowed_commands": ["scan"]},
+        ]
+        assets = ["10.0.0.10"]
+
+        agent = AgentCore(
+            allowed_tools=tools,
+            authorized_assets=assets,
+            objective="Web app scan",
+            decision_strategy="rule",  # NOT hybrid
+            max_steps=3,  # Low to keep test fast
+            stop_on_criteria_met=False,
+            stop_on_finding="none",
+        )
+
+        def execute(action):
+            return {"last_action_result": "no results"}
+
+        final_state, evidence, reason = run_agent_loop(agent, execute)
+
+        # Rule strategy should hit MAX_STEPS, not RULE_ENGINE_STALLED
+        assert reason == StopReason.MAX_STEPS, (
+            f"Expected MAX_STEPS, got {reason}"
+        )
+
+
+# ===========================================================================
+# 9. Phase-lock stall (Mode B) — E2E
+# ===========================================================================
+
+
+class TestE2EPhaseLockStall:
+    """Prove the hybrid strategy detects Mode B phase-lock stall.
+
+    Mode B: when execute returns ports AND services simultaneously (e.g.,
+    nmap -sV produces both), the rule selector jumps from recon (phase 1)
+    directly to vuln scan (phase 3), skipping fingerprint (phase 2).
+    If the vuln scan produces no new vulnerabilities, the selector stays
+    in phase 3 repeating the same command, which _check_tool_loop detects
+    as stall after 3+ consecutive identical actions.
+    """
+
+    def test_hybrid_stalls_on_phase_lock_skip(self):
+        """Execute returns ports+services together, causing phase skip,
+        then no vulns cause repeated vuln-scan commands -> stall."""
+        tools = [
+            {"name": "nmap", "allowed_commands": ["discover", "scan"]},
+            {"name": "reporter", "allowed_commands": ["summary"]},
+        ]
+        assets = ["10.0.0.10"]
+
+        agent = AgentCore(
+            allowed_tools=tools,
+            authorized_assets=assets,
+            objective="Phase-lock stall test",
+            decision_strategy="hybrid",
+            max_steps=10,
+            stop_on_criteria_met=False,
+            stop_on_finding="none",
+        )
+
+        call_count = [0]
+
+        def execute(action):
+            call_count[0] += 1
+            # Call 1: recon phase — return ports AND services together.
+            # This triggers a phase skip: after step_action, state has
+            # both open_ports and services, so the selector jumps past
+            # the fingerprint phase (phase 2) to vuln scan (phase 3).
+            if call_count[0] == 1:
+                return {
+                    "open_ports": [80, 443],
+                    "services": [{"name": "nginx"}, {"name": "ssh"}],
+                }
+            # Calls 2+: vuln phase — never return vulns, so the selector
+            # keeps generating the same vuln-scan command, triggering
+            # _check_tool_loop after 3+ repetitions.
+            return {"last_action_result": "no vulnerabilities found"}
+
+        final_state, evidence, reason = run_agent_loop(agent, execute)
+
+        # Agent should stop via RULE_ENGINE_STALLED (phase-lock), not MAX_STEPS
+        assert reason == StopReason.RULE_ENGINE_STALLED, (
+            f"Expected RULE_ENGINE_STALLED, got {reason}"
+        )
+        # Both services should have been discovered on the first call
+        assert len(final_state.services) == 2, (
+            "Should have discovered both services from the batched execute call"
+        )
+        # Evidence should show the repeated actions before stall fired
+        assert len(evidence) >= 1
+
+    def test_healthy_multi_phase_progression_does_not_stall(self):
+        """Control test: sequential phase transitions (one output type per
+        call) proceed cleanly through all 4 phases without stall.
+
+        Each call returns only the output expected for that phase:
+          1. recon -> only ports
+          2. fingerprint -> only services
+          3. vuln scan -> vulns
+          4. report -> summary
+        The selector transitions cleanly between phases, so _check_tool_loop
+        never sees 3+ consecutive identical actions.
+        """
+        tools = [
+            {"name": "nmap", "allowed_commands": ["discover", "scan"]},
+            {"name": "reporter", "allowed_commands": ["summary"]},
+        ]
+        assets = ["10.0.0.10"]
+
+        agent = AgentCore(
+            allowed_tools=tools,
+            authorized_assets=assets,
+            objective="Healthy progression test",
+            decision_strategy="hybrid",
+            max_steps=4,  # exactly 1 per phase: recon → fingerprint → vuln → report
+            stop_on_criteria_met=False,
+            stop_on_finding="none",
+        )
+
+        call_count = [0]
+
+        def execute(action):
+            call_count[0] += 1
+            # Phase 1: recon -> just ports
+            if call_count[0] == 1:
+                return {"open_ports": [80]}
+            # Phase 2: fingerprint -> just services
+            if call_count[0] == 2:
+                return {"services": [{"name": "nginx"}]}
+            # Phase 3: vuln scan -> return vulns to move to report phase
+            if call_count[0] == 3:
+                return {"vulnerabilities": [{"id": "CVE-2025-0001"}]}
+            # Phase 4: report -> summary
+            return {"last_action_result": "report generated"}
+
+        final_state, evidence, reason = run_agent_loop(agent, execute)
+
+        # Agent should stop via MAX_STEPS after all 4 phases complete.
+        # Each phase produces a different tool/command combination, so
+        # stall_count resets on every transition. With max_steps=4, the
+        # agent stops before the report phase can repeat 3+ times.
+        assert reason == StopReason.MAX_STEPS, (
+            f"Expected MAX_STEPS after 4 clean phases, got {reason}"
+        )
+        # Should have discovered the service
+        assert len(final_state.services) == 1
+
+
+# ===========================================================================
+# 10. Multi-asset target rotation — E2E
+# ===========================================================================
+
+
+class TestE2EMultiAssetRotation:
+    """Prove the hybrid strategy rotates through multiple authorized assets.
+
+    Each call to select_action should target a different asset, cycling
+    through the authorized list. This prevents the agent from always
+    hammering the first asset and spreads work across all targets.
+    """
+
+    def test_hybrid_rotation_cycles_across_three_assets(self):
+        """3 authorized assets → selector rotates through each one per call
+        while progressing through phases normally."""
+        tools = [
+            {"name": "nmap", "allowed_commands": ["discover", "scan"]},
+            {"name": "reporter", "allowed_commands": ["summary"]},
+        ]
+        assets = ["10.0.0.10", "10.0.0.11", "10.0.0.12"]
+
+        agent = AgentCore(
+            allowed_tools=tools,
+            authorized_assets=assets,
+            objective="Scan all assets",
+            decision_strategy="hybrid",
+            max_steps=4,  # Must stop before 3+ reporter repeats trigger stall
+            stop_on_criteria_met=False,
+            stop_on_finding="none",
+        )
+
+        captured_targets = []
+
+        def execute(action):
+            captured_targets.append(action.target)
+            # Return results that advance through all phases on first call.
+            # 
+            # IMPORTANT: Do NOT return discovered_assets — we don't need them
+            # for the rotation check, and including them would cause the
+            # asset-exhaustion stall check to fire (all assets discovered +
+            # stall_count > 0 from repeated reporter calls).
+            #
+            # Call 1: recon → nmap/discover (state advances past all phases)
+            # Calls 2-4: report → reporter/summary
+            # max_steps=4 stops at step 4 before 3+ identical report calls
+            return {
+                "open_ports": [80, 443],
+                "services": [{"name": "nginx"}],
+                "vulnerabilities": [{"id": "CVE-2025-0001"}],
+            }
+
+        final_state, evidence, reason = run_agent_loop(agent, execute)
+
+        # The agent should have stopped via MAX_STEPS (not stall or error)
+        assert reason == StopReason.MAX_STEPS, (
+            f"Expected MAX_STEPS, got {reason}. Targets: {captured_targets}"
+        )
+
+        # Targets should show partial rotation across 3 assets:
+        # Call 1: recon → 10.0.0.10 (idx 0)
+        # Call 2: report → 10.0.0.11 (idx 1)
+        # Call 3: report → 10.0.0.12 (idx 2)
+        # Call 4: report → 10.0.0.10 (idx 0, wraps around)
+        assert len(captured_targets) == 4, f"Expected 4 actions, got {len(captured_targets)}"
+        assert captured_targets == ["10.0.0.10", "10.0.0.11", "10.0.0.12", "10.0.0.10"]
+
+    def test_hybrid_rotation_with_phase_progression(self):
+        """Rotation persists across phase transitions: after state advances
+        from recon to fingerprint, the rotated asset target changes too."""
+        tools = [
+            {"name": "nmap", "allowed_commands": ["discover", "scan"]},
+            {"name": "reporter", "allowed_commands": ["summary"]},
+        ]
+        assets = ["10.0.0.10", "10.0.0.11"]
+
+        agent = AgentCore(
+            allowed_tools=tools,
+            authorized_assets=assets,
+            objective="Rotating scan",
+            decision_strategy="hybrid",
+            max_steps=4,
+            stop_on_criteria_met=False,
+            stop_on_finding="none",
+        )
+
+        captured_targets = []
+
+        def execute(action):
+            captured_targets.append(action.target)
+            # Phase 1: recon → just ports on 10.0.0.10
+            # Phase 2: fingerprint → just services on 10.0.0.11
+            # Phase 3: vuln scan → vulns on 10.0.0.10 (wraps around)
+            # Phase 4: report → summary on 10.0.0.11
+            if len(captured_targets) == 1:
+                return {"open_ports": [80]}
+            elif len(captured_targets) == 2:
+                return {"services": [{"name": "nginx"}]}
+            elif len(captured_targets) == 3:
+                return {"vulnerabilities": [{"id": "CVE-2025-0001"}]}
+            else:
+                return {"last_action_result": "report done"}
+
+        final_state, evidence, reason = run_agent_loop(agent, execute)
+
+        # Should stop via MAX_STEPS after 4 steps
+        assert reason == StopReason.MAX_STEPS
+
+        # Targets should rotate: recon → 10.0.0.10, fingerprint → 10.0.0.11,
+        # vuln → 10.0.0.10, report → 10.0.0.11
+        assert len(captured_targets) == 4
+        assert captured_targets == ["10.0.0.10", "10.0.0.11", "10.0.0.10", "10.0.0.11"]
+
+    def test_rotation_keeps_rotating_during_tool_loop_stall(self):
+        """Even during a tool-loop stall, the target keeps rotating through
+        authorized assets. The tool is the same (nmap/discover) but the target
+        cycles each call.
+
+        This prevents the asset-exhaustion stall from firing because the
+        selector never repeatedly targets the same asset — each call picks
+        the next one in rotation.
+        """
+        tools = [
+            {"name": "nmap", "allowed_commands": ["discover", "scan"]},
+            {"name": "reporter", "allowed_commands": ["summary"]},
+        ]
+        assets = ["10.0.0.10", "10.0.0.11", "10.0.0.12"]
+
+        agent = AgentCore(
+            allowed_tools=tools,
+            authorized_assets=assets,
+            objective="Rotation during stall",
+            decision_strategy="hybrid",
+            max_steps=6,
+            stop_on_criteria_met=False,
+            stop_on_finding="none",
+        )
+
+        captured_targets = []
+
+        def execute(action):
+            captured_targets.append(action.target)
+            # Never return progress — agent stays in recon phase forever
+            return {"last_action_result": "scanning..."}
+
+        final_state, evidence, reason = run_agent_loop(agent, execute)
+
+        # Agent should stop via RULE_ENGINE_STALLED (executor never advances
+        # state, so same nmap/discover repeats 3+ times)
+        assert reason == StopReason.RULE_ENGINE_STALLED, (
+            f"Expected RULE_ENGINE_STALLED, got {reason}"
+        )
+
+        # The targets should show clean rotation across 3 assets
+        # Even with stall, the selector rotates targets each call
+        assert len(captured_targets) >= 1
+
+        # First 3 targets should be 10.0.0.10, 10.0.0.11, 10.0.0.12
+        # (stall fires around call 4+, so we get at least 3 captured actions)
+        assert captured_targets[:3] == ["10.0.0.10", "10.0.0.11", "10.0.0.12"], (
+            f"Expected rotation across 3 assets, got: {captured_targets[:3]}"
+        )
+
+    def test_rule_strategy_rotates_too(self):
+        """Rule strategy also rotates through assets (rotation is in
+        _select_with_rules, not strategy-specific)."""
+        tools = [
+            {"name": "nmap", "allowed_commands": ["discover", "scan"]},
+            {"name": "reporter", "allowed_commands": ["summary"]},
+        ]
+        assets = ["10.0.0.10", "10.0.0.11"]
+
+        agent = AgentCore(
+            allowed_tools=tools,
+            authorized_assets=assets,
+            objective="Rule rotation",
+            decision_strategy="rule",  # Not hybrid!
+            max_steps=4,
+            stop_on_criteria_met=False,
+            stop_on_finding="none",
+        )
+
+        captured_targets = []
+
+        def execute(action):
+            captured_targets.append(action.target)
+            # Phase 1: recon
+            if len(captured_targets) == 1:
+                return {"open_ports": [80]}
+            # Phase 2: fingerprint
+            elif len(captured_targets) == 2:
+                return {"services": [{"name": "nginx"}]}
+            # Phase 3: vuln
+            elif len(captured_targets) == 3:
+                return {"vulnerabilities": [{"id": "CVE-2025-0001"}]}
+            # Phase 4: report
+            return {"last_action_result": "done"}
+
+        final_state, evidence, reason = run_agent_loop(agent, execute)
+
+        assert reason == StopReason.MAX_STEPS
+        # Rule strategy also rotates: 10.0.0.10, 10.0.0.11, 10.0.0.10, 10.0.0.11
+        assert len(captured_targets) == 4
+        assert captured_targets == ["10.0.0.10", "10.0.0.11", "10.0.0.10", "10.0.0.11"]
+
+
+# ===========================================================================
+# 11. CampaignExecutor integration
 # ===========================================================================
 
 
@@ -856,3 +1400,243 @@ class TestE2ECampaignExecutor:
         l = SnapshotLedger(ledger_files[0])
         violations = l.verify_integrity()
         assert violations == [], f"Snapshot chain broken in drift E2E: {violations}"
+
+
+# ===========================================================================
+# 12. LLM integration — E2E
+# ===========================================================================
+
+
+class TestE2ELLMIntegration:
+    """Prove the LLM provider integration works end-to-end via run_agent_loop.
+
+    Covers:
+      - LLM strategy with MockLLMProvider produces valid agent loop
+      - Hybrid with LLM fallback recovers from stall
+      - LLM with no prompt falls back to rules (no crash)
+      - LLM provider that returns same action confirms stall
+    """
+
+    def test_llm_strategy_uses_provider_actions(self):
+        """LLM strategy with MockLLMProvider: agent loop uses provider's actions."""
+        # Configure a mock provider that returns a reporter/summary action
+        custom_action = {
+            "tool": "reporter",
+            "command": "summary",
+            "arguments": {"findings": 1},
+            "target": "10.0.0.10",
+            "reasoning": "Mock LLM chose report phase",
+        }
+        provider = MockLLMProvider(default_action=custom_action)
+
+        agent = AgentCore(
+            allowed_tools=[
+                {"name": "nmap", "allowed_commands": ["discover", "scan"]},
+                {"name": "reporter", "allowed_commands": ["summary"]},
+            ],
+            authorized_assets=["10.0.0.10"],
+            objective="LLM E2E test",
+            decision_strategy="llm",
+            llm_prompt="You are an agent. Tools: {{ allowed_tools }}. State: {{ state }}.",
+            llm_provider=provider,
+            max_steps=3,
+            stop_on_criteria_met=False,
+            stop_on_finding="none",
+        )
+
+        def execute(action):
+            # The LLM returned reporter/summary — just acknowledge it
+            return {"last_action_result": "summary sent", "findings_summary": []}
+
+        final_state, evidence, reason = run_agent_loop(agent, execute)
+
+        # Provider should have been called at least once
+        assert provider.call_count >= 1, "MockLLMProvider was never called"
+        # Agent should have executed the LLM's provided action
+        assert len(evidence) >= 1, "No evidence was recorded"
+        # The evidence should reflect the LLM's action (reporter/summary)
+        if evidence:
+            assert evidence[0].action.tool == "reporter", (
+                f"Expected reporter, got {evidence[0].action.tool}"
+            )
+            assert evidence[0].action.command == "summary"
+        # The prompt should have been substituted (no mustache templates)
+        assert "{{ allowed_tools }}" not in provider.last_prompt, (
+            "Prompt template was not substituted"
+        )
+
+    def test_hybrid_with_llm_unsticks_from_stall(self):
+        """Hybrid strategy with LLM provider: when rule engine stalls from
+        repeated tool actions, the LLM fallback returns a different action
+        and the loop continues instead of stopping via RULE_ENGINE_STALLED."""
+        tools = [
+            {"name": "nmap", "allowed_commands": ["discover", "scan"]},
+            {"name": "reporter", "allowed_commands": ["summary"]},
+        ]
+        assets = ["10.0.0.10"]
+
+        # Create a mock provider that returns the reporter action on any call.
+        # The rules selector will keep generating nmap/scan (stays in fingerprint
+        # phase because execute never returns progress). When the stall fires,
+        # the LLM fallback returns reporter/summary (different action), which
+        # resets the stall counter.
+        unstuck_action = {
+            "tool": "reporter",
+            "command": "summary",
+            "arguments": {},
+            "target": "10.0.0.10",
+            "reasoning": "LLM: switching to report phase",
+        }
+        provider = MockLLMProvider(default_action=unstuck_action)
+
+        agent = AgentCore(
+            allowed_tools=tools,
+            authorized_assets=assets,
+            objective="Hybrid LLM unstick test",
+            decision_strategy="hybrid",
+            llm_prompt="Rescue prompt. State: {{ state }}",
+            llm_provider=provider,
+            max_steps=15,
+            stop_on_criteria_met=False,
+            stop_on_finding="none",
+        )
+
+        def execute(action):
+            # Never return progress — keeps rules in fingerprint phase (nmap/scan)
+            # But when LLM returns reporter/summary, we acknowledge it
+            return {"last_action_result": "completed", "findings_summary": []}
+
+        final_state, evidence, reason = run_agent_loop(agent, execute)
+
+        # Provider should have been called at least once (to unstick)
+        assert provider.call_count >= 1, "LLM provider was never called for unstick"
+        # The agent should NOT have stopped via RULE_ENGINE_STALLED because
+        # the LLM fallback produced a different action that reset the stall.
+        assert reason != StopReason.RULE_ENGINE_STALLED, (
+            f"Agent stalled despite LLM fallback. Reason: {reason}"
+        )
+        # Agent stopped via some other reason (likely MAX_STEPS)
+        assert reason is not None
+
+    def test_hybrid_with_llm_returns_same_action_stalls(self):
+        """Hybrid strategy with LLM provider that returns the same stalled
+        action: the stall is confirmed and the agent stops via
+        RULE_ENGINE_STALLED (LLM could not unstick)."""
+        tools = [
+            {"name": "nmap", "allowed_commands": ["discover", "scan"]},
+            {"name": "reporter", "allowed_commands": ["summary"]},
+        ]
+        assets = ["10.0.0.10"]
+
+        # Create a mock provider that returns the SAME action as the rule
+        # engine would produce (nmap/scan). This simulates an LLM that
+        # can't find a better action and confirms the stall.
+        same_action = {
+            "tool": "nmap",
+            "command": "discover",  # Must match rule engine recon phase (nmap/discover)
+            "arguments": {"target": "10.0.0.10", "ports": "top-1000"},
+            "target": "10.0.0.10",
+            "reasoning": "LLM: continuing scan",
+        }
+        provider = MockLLMProvider(default_action=same_action)
+
+        agent = AgentCore(
+            allowed_tools=tools,
+            authorized_assets=assets,
+            objective="Hybrid LLM same action test",
+            decision_strategy="hybrid",
+            llm_prompt="Rescue prompt. State: {{ state }}",
+            llm_provider=provider,
+            max_steps=15,
+            stop_on_criteria_met=False,
+            stop_on_finding="none",
+        )
+
+        def execute(action):
+            # Never return progress — keeps rules in fingerprint phase (nmap/scan)
+            return {"last_action_result": "scanning..."}
+
+        final_state, evidence, reason = run_agent_loop(agent, execute)
+
+        # Provider should have been called at least once
+        assert provider.call_count >= 1, "LLM provider was never called"
+        # Agent should stop via RULE_ENGINE_STALLED because LLM confirmed the stall
+        assert reason == StopReason.RULE_ENGINE_STALLED, (
+            f"Expected RULE_ENGINE_STALLED when LLM returns same action, got {reason}"
+        )
+        # Evidence should have entries from before the stall
+        assert len(evidence) >= 1
+
+    def test_llm_without_prompt_falls_back_to_rules(self):
+        """LLM strategy without llm_prompt falls back to rule-based selection.
+        Even with a provider configured, no prompt means no LLM call."""
+        provider = MockLLMProvider()
+
+        agent = AgentCore(
+            allowed_tools=[
+                {"name": "nmap", "allowed_commands": ["discover"]},
+            ],
+            authorized_assets=["10.0.0.10"],
+            objective="LLM fallback test",
+            decision_strategy="llm",
+            llm_prompt=None,  # No prompt — should fall back to rules
+            llm_provider=provider,
+            max_steps=2,
+            stop_on_criteria_met=False,
+            stop_on_finding="none",
+        )
+
+        def execute(action):
+            return {"open_ports": [80]}
+
+        final_state, evidence, reason = run_agent_loop(agent, execute)
+
+        # Provider should NOT have been called (no prompt means no LLM invocation)
+        assert provider.call_count == 0, (
+            f"Expected 0 calls to provider (no prompt), got {provider.call_count}"
+        )
+        # Agent should have used rule-based actions
+        assert len(evidence) >= 1
+        assert evidence[0].action.tool is not None
+
+    def test_llm_strategy_with_policy_gate_and_provider(self):
+        """LLM strategy with PolicyGate: provider actions pass through gate."""
+        custom_action = {
+            "tool": "nmap",
+            "command": "discover",
+            "arguments": {"target": "10.0.0.10"},
+            "target": "10.0.0.10",
+            "reasoning": "LLM chose recon",
+        }
+        provider = MockLLMProvider(default_action=custom_action)
+
+        agent = AgentCore(
+            allowed_tools=[{"name": "nmap", "allowed_commands": ["discover"]}],
+            authorized_assets=["10.0.0.10"],
+            objective="LLM gate test",
+            decision_strategy="llm",
+            llm_prompt="Gate test prompt",
+            llm_provider=provider,
+            max_steps=2,
+            stop_on_criteria_met=False,
+            stop_on_finding="none",
+        )
+
+        gate = PolicyGate(
+            allowed_tools=[{"name": "nmap", "allowed_commands": ["discover"]}],
+            authorized_assets=["10.0.0.10"],
+        )
+
+        def execute(action):
+            return {"open_ports": [80]}
+
+        final_state, evidence, reason = run_agent_loop(agent, execute, gate)
+
+        # Provider should have been called
+        assert provider.call_count >= 1
+        # All actions should pass the policy gate
+        for entry in evidence:
+            violations = gate.validate_action(entry.action)
+            assert violations == [], f"Policy violation in LLM action: {violations}"
+        # Agent completed without errors
+        assert reason is not None

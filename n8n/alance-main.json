@@ -1,0 +1,1025 @@
+[
+  {
+    "name": "Alance V1 - Production Hardened",
+    "nodes": [
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "twilio-webhook",
+          "options": {
+            "rawBody": true,
+            "responseHeaders": {
+              "entries": [
+                {
+                  "name": "Content-Type",
+                  "value": "text/xml"
+                }
+              ]
+            },
+            "responseData": "<Response></Response>",
+            "responseMode": "onReceived"
+          }
+        },
+        "id": "webhook",
+        "name": "Webhook",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 1,
+        "position": [
+          250,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "// ── Extract & Normalise Incoming Twilio Payload\n// Generate a stable ledger_key for idempotent duplicate detection\nconst d = items[0].json;\nconst message_id   = d.MessageSid || d.SmsSid || '';\nconst from_number  = d.From || d.WaId || '';\nconst to_number    = d.To || '';\nconst body         = (d.Body || '').trim();\nconst sms_status   = d.SmsStatus || d.MessageStatus || '';\nconst num_media    = parseInt(d.NumMedia || '0', 10);\nconst account_sid  = d.AccountSid || '';\nconst profile_name = d.ProfileName || '';\nconst api_version  = d.ApiVersion || '';\nconst environment  = $env.ENVIRONMENT || 'sandbox';\n\n// Stable ledger key: SHA256 of (from_number + message_body)\n// Enables duplicate detection even if Twilio generates a different SID\nconst crypto = typeof require !== 'undefined' ? require('crypto') : null;\nconst rawKey = from_number + '|' + body.toLowerCase().trim();\nconst ledger_key = crypto\n  ? crypto.createHash('sha256').update(rawKey).digest('hex').slice(0, 16)\n  : 'key_' + Date.now().toString(36);\n\nreturn [{\n  json: {\n    message_id, from_number, to_number, message_body: body,\n    sms_status, num_media, account_sid, profile_name, api_version,\n    environment, is_status_callback: sms_status.length > 0,\n    ledger_key,\n    received_at: new Date().toISOString()\n  }\n}];"
+        },
+        "id": "a002",
+        "name": "Extract Payload",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          450,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "operation": "read",
+          "documentId": {
+            "__rl": true,
+            "mode": "id",
+            "value": "DUMMY_GOOGLE_SHEET_ID"
+          },
+          "sheetName": {
+            "__rl": true,
+            "mode": "list",
+            "value": "MESSAGE_LEDGER"
+          },
+          "options": {}
+        },
+        "id": "a003",
+        "name": "Read MESSAGE_LEDGER",
+        "type": "n8n-nodes-base.googleSheets",
+        "typeVersion": 4,
+        "position": [
+          650,
+          300
+        ],
+        "credentials": {
+          "googleSheetsOAuth2Api": "GoogleSheetsAlance"
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "// ── Check for Duplicate: ledger_key (primary) + message_id (fallback)\nconst payload = $node[\"Extract Payload\"].data[0].json;\nconst msgId = payload.message_id;\nconst ledKey = payload.ledger_key;\nconst fromNum = payload.from_number;\n\n// Check by: (1) stable ledger_key, (2) message_id (for Twilio retries)\nconst duplicateByLedger = items.some(item =>\n  item.json.ledger_key === ledKey && item.json.from_number === fromNum\n);\nconst duplicateBySid = items.some(item => item.json.message_id === msgId);\nconst duplicate = duplicateByLedger || duplicateBySid;\n\nreturn [{\n  json: {\n    ...payload,\n    is_duplicate: duplicate,\n    duplicate_by_ledger: duplicateByLedger,\n    duplicate_by_sid: duplicateBySid,\n    check_timestamp: new Date().toISOString()\n  }\n}];"
+        },
+        "id": "a004",
+        "name": "Check Duplicate",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          850,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "conditions": [
+              {
+                "id": "a005-if-dup",
+                "leftValue": "={{ $json.is_duplicate }}",
+                "rightValue": true,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "equals",
+                  "name": "filter.operator.equals"
+                }
+              }
+            ],
+            "combinator": "and",
+            "options": {
+              "version": 2
+            }
+          }
+        },
+        "id": "is-dupli",
+        "name": "Is Duplicate?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          1050,
+          300
+        ]
+      },
+      {
+        "parameters": {},
+        "id": "a006",
+        "name": "Respond 200 OK (Duplicate)",
+        "type": "n8n-nodes-base.noOp",
+        "typeVersion": 1,
+        "position": [
+          1250,
+          200
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "conditions": [
+              {
+                "id": "a007-if-callback",
+                "leftValue": "={{ $json.sms_status }}",
+                "rightValue": "",
+                "operator": {
+                  "type": "string",
+                  "operation": "isNotEmpty",
+                  "name": "isNotEmpty"
+                }
+              }
+            ],
+            "combinator": "and",
+            "options": {
+              "version": 2
+            }
+          }
+        },
+        "id": "is-statu",
+        "name": "Is Status Callback?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          1050,
+          500
+        ]
+      },
+      {
+        "parameters": {
+          "operation": "append",
+          "documentId": {
+            "__rl": true,
+            "mode": "id",
+            "value": "DUMMY_GOOGLE_SHEET_ID"
+          },
+          "sheetName": {
+            "__rl": true,
+            "mode": "list",
+            "value": "MESSAGE_LEDGER"
+          },
+          "columns": {
+            "mappingMode": "defineBelow",
+            "value": {
+              "message_id": "={{ $json.message_id }}",
+              "from_number": "={{ $json.from_number }}",
+              "message_body": "={{ $json.message_body }}",
+              "sms_status": "={{ $json.sms_status }}",
+              "environment": "={{ $json.environment }}",
+              "status": "delivery_update",
+              "processed_at": "={{ $json.received_at }}"
+            }
+          },
+          "options": {}
+        },
+        "id": "a008",
+        "name": "Update Delivery Status",
+        "type": "n8n-nodes-base.googleSheets",
+        "typeVersion": 4,
+        "position": [
+          1250,
+          500
+        ],
+        "credentials": {
+          "googleSheetsOAuth2Api": "GoogleSheetsAlance"
+        }
+      },
+      {
+        "parameters": {
+          "operation": "read",
+          "documentId": {
+            "__rl": true,
+            "mode": "id",
+            "value": "DUMMY_GOOGLE_SHEET_ID"
+          },
+          "sheetName": {
+            "__rl": true,
+            "mode": "list",
+            "value": "CONVERSATIONS"
+          },
+          "options": {}
+        },
+        "id": "a009",
+        "name": "Read CONVERSATIONS",
+        "type": "n8n-nodes-base.googleSheets",
+        "typeVersion": 4,
+        "position": [
+          1250,
+          700
+        ],
+        "credentials": {
+          "googleSheetsOAuth2Api": "GoogleSheetsAlance"
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "// ── Check for Cancel / Stop / Opt-out / Menu / Help Keywords\nconst payload = $node[\"Extract Payload\"].data[0].json;\nconst body = payload.message_body || '';\nconst lowerBody = body.toLowerCase().trim();\n\n// Expanded keyword sets\nconst cancelKeywords = [\n  'cancel','stop','end','quit','unsubscribe',\n  'stop all','opt out','optout','pause',\n  'i want to stop','please stop','do not send','no more'\n];\nconst menuKeywords  = [\n  'menu','options','back','main menu','restart','start over','help'\n];\n\n// Phrase-aware matching: check full phrases before substring matches\nconst isCancel = cancelKeywords.some(k => lowerBody.includes(k)) ||\n                 menuKeywords.some(k => lowerBody.includes(k));\n\n// Find the latest conversation for this sender (active preferred)
+// Sort by last_message_at descending so newest row comes first
+const senderConvs = items
+  .filter(item => item.json.from_number === payload.from_number)
+  .sort((a, b) => new Date(b.json.last_message_at || 0) - new Date(a.json.last_message_at || 0));
+
+// Prefer the latest active conversation; fall back to most recent row
+const activeConv = senderConvs.find(c => c.json.status === 'active') || null;
+
+// Known sender: has any conversation history
+const knownSender = senderConvs.length > 0;\n\nreturn [{\n  json: {\n    ...payload,\n    is_cancel_request: isCancel,\n    existing_conversation: activeConv ? activeConv.json : null,\n    conversation_id: activeConv ? activeConv.json.conversation_id : payload.message_id,\n    current_state: activeConv ? activeConv.json.state : (knownSender ? 'CONSULTING' : 'NEW'),\n    has_existing_conv: !!activeConv,\n    known_sender: knownSender\n  }\n}];"
+        },
+        "id": "a010",
+        "name": "Cancel/Stop Check",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1450,
+          700
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "conditions": [
+              {
+                "id": "a011-if-cancel",
+                "leftValue": "={{ $json.is_cancel_request }}",
+                "rightValue": true,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "equals",
+                  "name": "filter.operator.equals"
+                }
+              }
+            ],
+            "combinator": "and",
+            "options": {
+              "version": 2
+            }
+          }
+        },
+        "id": "is-cance",
+        "name": "Is Cancel?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          1650,
+          700
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "// ── Keyword Scorer v2: Phrase-Weighted Intent Detection\nconst payload = $node[\"Extract Payload\"].data[0].json;\nconst body = payload.message_body || '';\nconst lowerBody = body.toLowerCase().trim();\n\n// ── Phase-weight scoring: phrases score higher than single words\n// Each entry: [wordOrPhrase, weight] — phrases get weight 3, words weight 1\nconst keywords = {\n  booking: [\n    ['book an appointment', 3], ['schedule a meeting', 3], ['need to book', 3],\n    ['i want to book', 3], ['can i book', 3], ['book','appointment',1],\n    ['reschedule', 2], ['availability', 2], ['follow up', 2], ['make a booking', 3],\n    ['schedule', 1], ['meeting', 1], ['consultation', 1], ['slot', 1],\n    ['reserve', 1], ['book now', 2]\n  ],\n  greeting: [\n    ['hello', 1], ['hi', 1], ['hey', 1], ['good morning', 2],\n    ['good evening', 2], ['namaste', 2], ['how are you', 2], ['hi there', 2]\n  ],\n  pricing: [\n    ['how much', 2], ['what is the price', 3], ['what are your rates', 3],\n    ['price', 1], ['cost', 1], ['rate', 1], ['fee', 1], ['charge', 1],\n    ['pricing', 2], ['how much does it cost', 3]\n  ],\n  service: [\n    ['what services', 2], ['what do you offer', 3], ['can you help', 2],\n    ['service', 1], ['offer', 1], ['provide', 1], ['do you', 1],\n    ['help with', 1], ['tell me about', 2]\n  ],\n  time: [\n    ['today', 1], ['tomorrow', 2], ['next week', 2], ['this week', 2],\n    ['available', 1], ['when', 1], ['what time', 2], ['later today', 2]\n  ],\n  name: [\n    ['my name is', 3], ['name is', 3], ['i am', 1], ['call me', 2],\n    ['i\\'m', 1], ['this is', 1]\n  ],\n  telugu: [\n    ['namaskaram', 3], ['emiti', 2], ['ela unnaru', 3], ['bagunnara', 2],\n    ['kavali', 2], ['tondara', 2], ['entandi', 2], ['sarle', 1]\n  ],\n  info: [\n    ['what is', 1], ['tell me', 1], ['about', 1], ['information', 1],\n    ['details', 1], ['more info', 2], ['i want to know', 2], ['can you tell', 1]\n  ],\n  thanks: [\n    ['thank you very much', 3], ['thanks a lot', 3],\n    ['thank you so much', 3], ['thank you', 2], ['thanks', 2],\n    ['ok', 1], ['okay', 1], ['got it', 2], ['sure', 1], ['great', 1]\n  ]\n};\n\n// Score each category using weighted phrases\nconst scores = {};\nfor (const [category, patterns] of Object.entries(keywords)) {\n  let total = 0;\n  for (const [phrase, weight] of patterns) {\n    if (lowerBody.includes(phrase)) {\n      total += weight;\n    }\n  }\n  scores[category] = total;\n}\n\n// Sort by score descending\nconst sorted = Object.entries(scores).sort((a, b) => b[1] - a[1]);\nconst topScore = sorted[0][1];\nconst secondScore = sorted.length > 1 ? sorted[1][1] : 0;\n\n// ── Determine primary intent\nlet primaryIntent = 'unknown';\nlet confidence = 0;\n\nif (topScore > 0) {\n  primaryIntent = sorted[0][0];\n  confidence = topScore;\n  \n  // Special: thanks is only terminal if confidence is high and no other strong intent\n  if (primaryIntent === 'thanks' && secondScore >= topScore) {\n    primaryIntent = sorted[1][0];\n  }\n  // Give priority to booking if scores are tied\n  if (primaryIntent !== 'booking' && scores.booking > 0 && scores.booking >= topScore - 1) {\n    primaryIntent = 'booking';\n    confidence = Math.max(confidence, scores.booking);\n  }\n}\n\n// ── Is this a genuine booking intent? More than just mentioning \"book\" once\nconst isBookingIntent = scores.booking >= 2 || (scores.booking > 0 && scores.name > 0);\n\nreturn [{\n  json: {\n    ...$json,\n    keyword_scores: scores,\n    primary_intent: primaryIntent,\n    confidence,\n    top_intents: sorted.filter(s => s[1] > 0).slice(0, 3),\n    is_booking_intent: isBookingIntent\n  }\n}];"
+        },
+        "id": "a013",
+        "name": "Keyword Scorer",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1850,
+          800
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "// ── State Machine v2: 4-State Model with Explicit Transition Rules\n//\n// States:  NEW → CONSULTING → BOOKING → DONE\n//          Any → CANCELLED (on cancel/stop)\n//\n// Transition Rules:\n//   NEW:          booking_intent → BOOKING, any_other → CONSULTING\n//   CONSULTING:   booking_intent → BOOKING, high_confidence + thanks → DONE, else → stay\n//   BOOKING:      thanks + name + high_confidence → DONE, else → stay (requires confirmation)\n//   DONE:         stay (terminal)\n//\n// Drift: when intent is unknown but state changes (prevented, logged)\n// Unknown state: safely reset to NEW with a drift log\n\nconst currentState = $json.is_cancel_request ? 'CANCELLED' : ($json.current_state || 'NEW');\nconst intent = $json.primary_intent || 'unknown';\nconst confidence = $json.confidence || 0;\nconst isBooking = $json.is_booking_intent || false;\nconst hasBooking = $json.keyword_scores?.booking > 0;\n\nlet nextState = currentState;\nlet stateNote = '';\nlet driftDetected = false;\n\n// ── Cancel always wins\nif ($json.is_cancel_request) {\n  nextState = 'CANCELLED';\n  stateNote = 'CANCELLED: User requested cancellation';\n} else {\n  switch (currentState) {\n    case 'NEW':\n      if (isBooking) {\n        nextState = 'BOOKING';\n        stateNote = 'NEW -> BOOKING (booking intent)';\n      } else {\n        nextState = 'CONSULTING';\n        stateNote = 'NEW -> CONSULTING (general inquiry)';\n      }\n      break;\n\n    case 'CONSULTING':\n      if (isBooking) {\n        nextState = 'BOOKING';\n        stateNote = 'CONSULTING -> BOOKING (user wants to book)';\n      } else if (intent === 'thanks' && confidence >= 2) {\n        // Only resolve to DONE if thanks is genuine (high confidence)\n        nextState = 'DONE';\n        stateNote = 'CONSULTING -> DONE (resolved with thanks)';\n      } else if (confidence >= 3 && intent !== 'unknown') {\n        nextState = 'DONE';\n        stateNote = 'CONSULTING -> DONE (high confidence resolved)';\n      } else {\n        stateNote = 'Stayed in CONSULTING (needs more info)';\n      }\n      break;\n\n    case 'BOOKING':\n      // BOOKING → DONE requires confirmation: thanks + name + confidence >= 2\n      const hasConfirmation = (intent === 'thanks' || intent === 'name') && confidence >= 2;\n      const hasName = intent === 'name' || $json.keyword_scores?.name > 0;\n      if (hasConfirmation || (hasName && hasBooking)) {\n        nextState = 'DONE';\n        stateNote = 'BOOKING -> DONE (confirmed: name + thanks)';\n      } else {\n        stateNote = 'Stayed in BOOKING (awaiting confirmation)';\n      }\n      break;\n\n    case 'DONE':\n      stateNote = 'DONE: Already completed (no transition)';\n      break;\n\n    default:\n      // Unknown/corrupted state — reset to NEW with drift notification\n      nextState = 'NEW';\n      stateNote = 'DRIFT: ' + currentState + ' -> NEW (unknown state reset)';\n      driftDetected = true;\n  }\n}\n\n// ── Drift detection: prevent state change when intent is unknown\n// UNLESS it's a cancel request (explicit user action)\nif (!driftDetected && currentState !== nextState && intent === 'unknown' && !$json.is_cancel_request) {\n  driftDetected = true;\n  stateNote = 'DRIFT: ' + currentState + ' -> ' + nextState + ' (blocked — unknown intent)';\n  nextState = currentState;  // Rollback — no transition without clear intent\n}\n\n// Determine if booking was just completed\nconst isBookingComplete = nextState === 'DONE' && currentState === 'BOOKING';\n\nreturn [{\n  json: {\n    ...$json,\n    previous_state: currentState,\n    current_state: nextState,\n    state_note: stateNote,\n    drift_detected: driftDetected,\n    is_booking_complete: isBookingComplete\n  }\n}];"
+        },
+        "id": "a014",
+        "name": "State Machine",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2050,
+          800
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "conditions": [
+              {
+                "id": "a015-if-drift",
+                "leftValue": "={{ $json.drift_detected }}",
+                "rightValue": true,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "equals",
+                  "name": "filter.operator.equals"
+                }
+              }
+            ],
+            "combinator": "and",
+            "options": {
+              "version": 2
+            }
+          }
+        },
+        "id": "is-drift",
+        "name": "Is Drift?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          2250,
+          800
+        ]
+      },
+      {
+        "parameters": {
+          "operation": "append",
+          "documentId": {
+            "__rl": true,
+            "mode": "id",
+            "value": "DUMMY_GOOGLE_SHEET_ID"
+          },
+          "sheetName": {
+            "__rl": true,
+            "mode": "list",
+            "value": "STATE_DRIFT"
+          },
+          "columns": {
+            "mappingMode": "defineBelow",
+            "value": {
+              "timestamp": "={{ $json.received_at }}",
+              "conversation_id": "={{ $json.conversation_id || $json.message_id }}",
+              "from_number": "={{ $json.from_number }}",
+              "expected_state": "={{ $json.previous_state }}",
+              "actual_state": "={{ $json.current_state }}",
+              "trigger_message": "={{ $json.message_body }}",
+              "environment": "={{ $json.environment }}",
+              "state_note": "={{ $json.state_note }}"
+            }
+          },
+          "options": {}
+        },
+        "id": "a016",
+        "name": "Log STATE_DRIFT",
+        "type": "n8n-nodes-base.googleSheets",
+        "typeVersion": 4,
+        "position": [
+          2450,
+          600
+        ],
+        "credentials": {
+          "googleSheetsOAuth2Api": "GoogleSheetsAlance"
+        }
+      },
+      {
+        "parameters": {
+          "chatId": "DUMMY_TELEGRAM_CHAT_ID",
+          "text": "=Drift Alert - Alance V1\nEnvironment: {{ $json.environment }}\nFrom: {{ $json.from_number }}\nState: {{ $json.previous_state }} -> {{ $json.current_state }}\nNote: {{ $json.state_note }}\nMessage: {{ $json.message_body }}",
+          "resource": "message",
+          "operation": "sendMessage",
+          "additionalFields": {
+            "parseMode": "markdown"
+          }
+        },
+        "id": "a017",
+        "name": "Telegram Alert (Drift)",
+        "type": "n8n-nodes-base.telegram",
+        "typeVersion": 1,
+        "position": [
+          2450,
+          800
+        ],
+        "credentials": {
+          "telegramApi": "TelegramAlanceBot"
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "// ── Build Reply v2: Context-Aware Response Generator\n// Can be invoked from cancel path (no State Machine data) or normal path\nconst isCancel = !!$json.is_cancel_request;\nlet state = ($json.current_state || 'NEW').toUpperCase();\n\n// If coming from cancel path, current_state might not be CANCELLED yet\nif (isCancel) {\n  state = 'CANCELLED';\n}\n\nconst intent = $json.primary_intent || 'unknown';\nlet reply = '';\n\nswitch (state) {\n  case 'NEW':\n  case 'CONSULTING':\n    if (intent === 'greeting') {\n      reply = 'Hello! 👋 Welcome to Alance.\\n\\nI can help with information about our services, pricing, or booking an appointment. What would you like to know?';\n    } else if (intent === 'pricing') {\n      reply = 'Great question about pricing! 💰\\n\\nWe offer competitive rates for our services. Could you let me know which specific service you are interested in so I can give you accurate pricing?';\n    } else if (intent === 'service') {\n      reply = 'Thanks for your interest! 😊 We offer a range of professional services. Could you tell me a bit more about what you need help with?';\n    } else if (intent === 'telugu') {\n      reply = 'Namaskaram! 🙏\\n\\nMemu Alance lo meeku sahayam cheyadaniki siddhamga unnam. Meeru emi kosam vethukutunnaru? (We are happy to help you. What are you looking for?)';\n    } else {\n      reply = 'Hi there! 👋 Welcome to Alance.\\n\\nI can help with info about our services, pricing, or booking. Just let me know what you need!';\n    }\n    break;\n\n  case 'BOOKING':\n    reply = 'I would be happy to book an appointment for you! 📅\\n\\nPlease share your preferred date and time, plus your name, and I will get you scheduled right away.';\n    break;\n\n  case 'DONE':\n    reply = 'Your appointment is confirmed! ✅\\n\\nWe will send you a reminder before your scheduled time. If you need anything else, just let us know!';\n    break;\n\n  case 'CANCELLED':\n    reply = 'No problem at all! ✅\\n\\nYour request has been cancelled. If you ever need our services again, just send us a message. Have a great day!';\n    break;\n\n  default:\n    reply = 'Thanks for reaching out to Alance! How can I assist you today?';\n    break;\n}\n\nreturn [{ json: { ...$json, current_state: state, is_cancel_request: isCancel, reply_text: reply, reply_timestamp: new Date().toISOString() } }];"
+        },
+        "id": "a018",
+        "name": "Build Reply",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2650,
+          800
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "conditions": [
+              {
+                "id": "a019-if-prod",
+                "leftValue": "={{ $json.environment }}",
+                "rightValue": "production",
+                "operator": {
+                  "type": "string",
+                  "operation": "equals",
+                  "name": "filter.operator.equals"
+                }
+              }
+            ],
+            "combinator": "and",
+            "options": {
+              "version": 2
+            }
+          }
+        },
+        "id": "is-produ",
+        "name": "Is Production?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          2850,
+          800
+        ]
+      },
+      {
+        "parameters": {
+          "resource": "message",
+          "operation": "send",
+          "from": "+10000000000",
+          "to": "={{ $json.from_number }}",
+          "body": "={{ $json.reply_text }}"
+        },
+        "id": "a020",
+        "name": "Send Reply (Production)",
+        "type": "n8n-nodes-base.twilio",
+        "typeVersion": 1,
+        "position": [
+          3050,
+          700
+        ],
+        "credentials": {
+          "twilioApi": "TwilioProduction"
+        }
+      },
+      {
+        "parameters": {
+          "resource": "message",
+          "operation": "send",
+          "from": "+10000000000",
+          "to": "={{ $json.from_number }}",
+          "body": "={{ $json.reply_text }}"
+        },
+        "id": "a021",
+        "name": "Send Reply (Sandbox)",
+        "type": "n8n-nodes-base.twilio",
+        "typeVersion": 1,
+        "position": [
+          3050,
+          900
+        ],
+        "credentials": {
+          "twilioApi": "TwilioSandbox"
+        }
+      },
+      {
+        "parameters": {
+          "values": {
+            "string": [
+              {
+                "name": "reply_text",
+                "value": "Sorry, having a temporary issue. Your message was received and we will get back to you shortly."
+              },
+              {
+                "name": "fallback_triggered",
+                "value": "true"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "a022",
+        "name": "Fallback Reply",
+        "type": "n8n-nodes-base.set",
+        "typeVersion": 3,
+        "position": [
+          3250,
+          800
+        ]
+      },
+      {
+        "parameters": {
+          "operation": "append",
+          "documentId": {
+            "__rl": true,
+            "mode": "id",
+            "value": "DUMMY_GOOGLE_SHEET_ID"
+          },
+          "sheetName": {
+            "__rl": true,
+            "mode": "list",
+            "value": "MESSAGE_LEDGER"
+          },
+          "columns": {
+            "mappingMode": "defineBelow",
+            "value": {
+              "message_id": "={{ $json.message_id }}",
+              "ledger_key": "={{ $json.ledger_key }}",
+              "from_number": "={{ $json.from_number }}",
+              "message_body": "={{ $json.message_body }}",
+              "reply_sent": "={{ $json.reply_text }}",
+              "environment": "={{ $json.environment }}",
+              "status": "={{ $json.drift_detected ? 'drift_sent' : ($json.is_cancel_request ? 'cancelled' : ($json.is_booking_complete ? 'booking_done' : 'replied')) }}",
+              "state": "={{ $json.current_state }}",
+              "previous_state": "={{ $json.previous_state }}",
+              "state_note": "={{ $json.state_note }}",
+              "drift_detected": "={{ $json.drift_detected }}",
+              "primary_intent": "={{ $json.primary_intent }}",
+              "confidence": "={{ $json.confidence }}",
+              "processed_at": "={{ $json.received_at }}",
+              "reply_timestamp": "={{ $json.reply_timestamp || $json.received_at }}"
+            }
+          },
+          "options": {}
+        },
+        "id": "a023",
+        "name": "Append MESSAGE_LEDGER",
+        "type": "n8n-nodes-base.googleSheets",
+        "typeVersion": 4,
+        "position": [
+          3450,
+          800
+        ],
+        "credentials": {
+          "googleSheetsOAuth2Api": "GoogleSheetsAlance"
+        }
+      },
+      {
+        "parameters": {
+          "operation": "append",
+          "documentId": {
+            "__rl": true,
+            "mode": "id",
+            "value": "DUMMY_GOOGLE_SHEET_ID"
+          },
+          "sheetName": {
+            "__rl": true,
+            "mode": "list",
+            "value": "CONVERSATIONS"
+          },
+          "columns": {
+            "mappingMode": "defineBelow",
+            "value": {
+              "conversation_id": "={{ $json.conversation_id || $json.message_id }}",
+              "from_number": "={{ $json.from_number }}",
+              "state": "={{ $json.current_state }}",
+              "status": "={{ ['DONE','CANCELLED'].includes($json.current_state) ? 'completed' : 'active' }}",
+              "last_message_at": "={{ $json.received_at }}",
+              "created_at": "={{ $json.received_at }}",
+              "updated_at": "={{ $json.reply_timestamp || $json.received_at }}"
+            }
+          },
+          "options": {}
+        },
+        "id": "a027",
+        "name": "Append CONVERSATIONS",
+        "type": "n8n-nodes-base.googleSheets",
+        "typeVersion": 4,
+        "position": [
+          3650,
+          800
+        ],
+        "credentials": {
+          "googleSheetsOAuth2Api": "GoogleSheetsAlance"
+        }
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "conditions": [
+              {
+                "id": "a024-if-lead",
+                "leftValue": "={{ $json.is_booking_complete }}",
+                "rightValue": true,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "equals",
+                  "name": "filter.operator.equals"
+                }
+              }
+            ],
+            "combinator": "and",
+            "options": {
+              "version": 2
+            }
+          }
+        },
+        "id": "booking-",
+        "name": "Booking Complete?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          3850,
+          800
+        ]
+      },
+      {
+        "parameters": {
+          "operation": "append",
+          "documentId": {
+            "__rl": true,
+            "mode": "id",
+            "value": "DUMMY_GOOGLE_SHEET_ID"
+          },
+          "sheetName": {
+            "__rl": true,
+            "mode": "list",
+            "value": "LEADS"
+          },
+          "columns": {
+            "mappingMode": "defineBelow",
+            "value": {
+              "id": "={{ $json.message_id }}",
+              "from_number": "={{ $json.from_number }}",
+              "name": "={{ $json.profile_name || 'Unknown' }}",
+              "booking_time": "={{ $json.received_at }}",
+              "intent": "={{ $json.primary_intent }}",
+              "source": "whatsapp",
+              "lead_status": "new",
+              "environment": "={{ $json.environment }}",
+              "notes": "Booking completed via WhatsApp"
+            }
+          },
+          "options": {}
+        },
+        "id": "a025",
+        "name": "Append LEADS",
+        "type": "n8n-nodes-base.googleSheets",
+        "typeVersion": 4,
+        "position": [
+          4050,
+          700
+        ],
+        "credentials": {
+          "googleSheetsOAuth2Api": "GoogleSheetsAlance"
+        }
+      },
+      {
+        "parameters": {},
+        "id": "a026",
+        "name": "Done",
+        "type": "n8n-nodes-base.noOp",
+        "typeVersion": 1,
+        "position": [
+          4050,
+          900
+        ]
+      },
+      {
+        "parameters": {
+          "content": "## Alance V1 - Production Hardened\n\nNodes: 27 total\nWebhook path: twilio-webhook\nCredentials: TwilioSandbox, TwilioProduction, GoogleSheetsAlance, TelegramAlanceBot\nPlaceholders: DUMMY_GOOGLE_SHEET_ID, DUMMY_TELEGRAM_CHAT_ID, +10000000000\n\nSheets: MESSAGE_LEDGER, CONVERSATIONS, LEADS, STATE_DRIFT, ERRORS, HEALTHMETRICS"
+        },
+        "id": "a999",
+        "name": "README",
+        "type": "n8n-nodes-base.stickyNote",
+        "typeVersion": 1,
+        "position": [
+          50,
+          50
+        ]
+      }
+    ],
+    "connections": {
+      "Webhook": {
+        "main": [
+          [
+            {
+              "node": "Extract Payload",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Extract Payload": {
+        "main": [
+          [
+            {
+              "node": "Read MESSAGE_LEDGER",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Read MESSAGE_LEDGER": {
+        "main": [
+          [
+            {
+              "node": "Check Duplicate",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Check Duplicate": {
+        "main": [
+          [
+            {
+              "node": "Is Duplicate?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Is Duplicate?": {
+        "main": [
+          [
+            {
+              "node": "Respond 200 OK (Duplicate)",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Is Status Callback?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Is Status Callback?": {
+        "main": [
+          [
+            {
+              "node": "Update Delivery Status",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Read CONVERSATIONS",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Update Delivery Status": {
+        "main": [
+          [
+            {
+              "node": "Done",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Read CONVERSATIONS": {
+        "main": [
+          [
+            {
+              "node": "Cancel/Stop Check",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Cancel/Stop Check": {
+        "main": [
+          [
+            {
+              "node": "Is Cancel?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Is Cancel?": {
+        "main": [
+          [
+            {
+              "node": "Build Reply",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Keyword Scorer",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Keyword Scorer": {
+        "main": [
+          [
+            {
+              "node": "State Machine",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "State Machine": {
+        "main": [
+          [
+            {
+              "node": "Is Drift?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Is Drift?": {
+        "main": [
+          [
+            {
+              "node": "Log STATE_DRIFT",
+              "type": "main",
+              "index": 0
+            },
+            {
+              "node": "Telegram Alert (Drift)",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Build Reply",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Log STATE_DRIFT": {
+        "main": [
+          [
+            {
+              "node": "Done",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Telegram Alert (Drift)": {
+        "main": [
+          [
+            {
+              "node": "Build Reply",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build Reply": {
+        "main": [
+          [
+            {
+              "node": "Is Production?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Is Production?": {
+        "main": [
+          [
+            {
+              "node": "Send Reply (Production)",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Send Reply (Sandbox)",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Send Reply (Production)": {
+        "main": [
+          [
+            {
+              "node": "Append MESSAGE_LEDGER",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ],
+        "error": [
+          [
+            {
+              "node": "Fallback Reply",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Send Reply (Sandbox)": {
+        "main": [
+          [
+            {
+              "node": "Append MESSAGE_LEDGER",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ],
+        "error": [
+          [
+            {
+              "node": "Fallback Reply",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Fallback Reply": {
+        "main": [
+          [
+            {
+              "node": "Append MESSAGE_LEDGER",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Append MESSAGE_LEDGER": {
+        "main": [
+          [
+            {
+              "node": "Append CONVERSATIONS",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Append CONVERSATIONS": {
+        "main": [
+          [
+            {
+              "node": "Booking Complete?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Booking Complete?": {
+        "main": [
+          [
+            {
+              "node": "Append LEADS",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Done",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Append LEADS": {
+        "main": [
+          [
+            {
+              "node": "Done",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "timezone": "UTC",
+      "saveManualExecutions": true,
+      "saveExecutionProgress": true,
+      "errorWorkflow": "ALANCE_ERROR_WORKFLOW_ID"
+    },
+    "staticData": null,
+    "tags": [],
+    "versionId": "v1-alance-0002"
+  }
+]

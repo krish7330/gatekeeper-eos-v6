@@ -1,0 +1,337 @@
+[
+  {
+    "name": "Hardened Pair — Main",
+    "nodes": [
+      {
+        "parameters": {},
+        "id": "b1a2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+        "name": "Manual Trigger",
+        "type": "n8n-nodes-base.manualTrigger",
+        "typeVersion": 1,
+        "position": [250, 400]
+      },
+      {
+        "parameters": {
+          "values": {
+            "string": [
+              {
+                "name": "environment",
+                "value": "={{ $env.ENVIRONMENT }}"
+              },
+              {
+                "name": "sandbox_flag",
+                "value": "={{ $env.SANDBOX_MODE || 'true' }}"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "a2b3c4d5-6e7f-4a8b-9c0d-1e2f3a4b5c6d",
+        "name": "Load Environment",
+        "type": "n8n-nodes-base.set",
+        "typeVersion": 3,
+        "position": [450, 400]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "conditions": [
+              {
+                "id": "c3d4e5f6-7a8b-4c9d-0e1f-2a3b4c5d6e7f",
+                "leftValue": "={{ $json.environment }}",
+                "rightValue": "production",
+                "operator": {
+                  "type": "string",
+                  "operation": "equals",
+                  "name": "filter.operator.equals"
+                }
+              }
+            ],
+            "combinator": "and",
+            "options": {
+              "version": 2
+            }
+          }
+        },
+        "id": "c3d4e5f6-7a8b-4c9d-0e1f-2a3b4c5d6e7f",
+        "name": "Env Toggle",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [650, 400]
+      },
+      {
+        "parameters": {
+          "jsCode": "// Generate a deterministic idempotency key from the input.\n// Re-run detection: same input → same key → skip duplicate processing.\n\nconst crypto = typeof require !== 'undefined' ? require('crypto') : null;\n\nconst input = JSON.stringify(items[0].json);\nconst hash = crypto\n  ? crypto.createHash('sha256').update(input).digest('hex').slice(0, 16)\n  : 'key_' + Date.now().toString(36);\n\nreturn items.map(item => ({\n  json: {\n    ...item.json,\n    idempotency_key: hash,\n    received_at: new Date().toISOString()\n  }\n}));"
+        },
+        "id": "d4e5f6a7-8b9c-4d0e-1f2a-3b4c5d6e7f8a",
+        "name": "Generate Idempotency Key",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [850, 300]
+      },
+      {
+        "parameters": {
+          "operation": "read",
+          "documentId": {
+            "__rl": true,
+            "mode": "id",
+            "value": "YOUR_GOOGLE_SHEET_ID"
+          },
+          "sheetName": {
+            "__rl": true,
+            "mode": "list",
+            "value": "MESSAGE_LEDGER"
+          },
+          "options": {
+            "dataLocationOnSheet": {
+              "range": ""
+            }
+          }
+        },
+        "id": "e5f6a7b8-9c0d-4e1f-2a3b-4c5d6e7f8a9b",
+        "name": "Read MESSAGE_LEDGER",
+        "type": "n8n-nodes-base.googleSheets",
+        "typeVersion": 4,
+        "position": [1050, 300]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "conditions": [
+              {
+                "id": "f6a7b8c9-0d1e-4f2a-3b4c-5d6e7f8a9b0c",
+                "leftValue": "={{ $items('Read MESSAGE_LEDGER').any(item => item.json.message_id === $json.idempotency_key) }}",
+                "rightValue": true,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "equals",
+                  "name": "filter.operator.equals"
+                }
+              }
+            ],
+            "combinator": "and",
+            "options": {
+              "version": 2
+            }
+          }
+        },
+        "id": "f6a7b8c9-0d1e-4f2a-3b4c-5d6e7f8a9b0c",
+        "name": "Duplicate Check",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [1250, 300]
+      },
+      {
+        "parameters": {
+          "jsCode": "// ── Core Processing Logic ──────────────────────────────────\n// Replace this block with your actual business logic.\n// The input is available in items[0].json.\n//\n// Example: proxy the input to an external API, transform data,\n// run an AI model, etc.\n\nreturn items.map(item => ({\n  json: {\n    ...item.json,\n    status: 'processed',\n    output: `Received on ${item.json.received_at}. ` +\n      `Environment: ${item.json.environment || 'unknown'}. ` +\n      `Idempotency key: ${item.json.idempotency_key}.`\n  }\n}));"
+        },
+        "id": "a7b8c9d0-1e2f-4a3b-4c5d-6e7f8a9b0c1d",
+        "name": "Process",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [1450, 200]
+      },
+      {
+        "parameters": {
+          "operation": "append",
+          "documentId": {
+            "__rl": true,
+            "mode": "id",
+            "value": "YOUR_GOOGLE_SHEET_ID"
+          },
+          "sheetName": {
+            "__rl": true,
+            "mode": "list",
+            "value": "MESSAGE_LEDGER"
+          },
+          "columns": {
+            "mappingMode": "defineBelow",
+            "value": {
+              "message_id": "={{ $json.idempotency_key }}",
+              "environment": "={{ $json.environment }}",
+              "input_preview": "={{ JSON.stringify($json).slice(0, 200) }}",
+              "status": "={{ $json.status }}",
+              "processed_at": "={{ $json.received_at }}"
+            }
+          },
+          "options": {}
+        },
+        "id": "b8c9d0e1-2f3a-4b4c-5d6e-7f8a9b0c1d2e",
+        "name": "Log Success to MESSAGE_LEDGER",
+        "type": "n8n-nodes-base.googleSheets",
+        "typeVersion": 4,
+        "position": [1650, 200]
+      },
+      {
+        "parameters": {},
+        "id": "c9d0e1f2-3a4b-4c5d-6e7f-8a9b0c1d2e3f",
+        "name": "Done",
+        "type": "n8n-nodes-base.noOp",
+        "typeVersion": 1,
+        "position": [1850, 200]
+      },
+      {
+        "parameters": {
+          "values": {
+            "string": [
+              {
+                "name": "status",
+                "value": "cached"
+              },
+              {
+                "name": "note",
+                "value": "This request was already processed (idempotency hit). Returning previous result."
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "d0e1f2a3-4b5c-4d6e-7f8a-9b0c1d2e3f4a",
+        "name": "Cached Response",
+        "type": "n8n-nodes-base.set",
+        "typeVersion": 3,
+        "position": [1450, 450]
+      },
+      {
+        "parameters": {
+          "values": {
+            "string": [
+              {
+                "name": "status",
+                "value": "sandbox"
+              },
+              {
+                "name": "note",
+                "value": "Sandbox mode active. This is a simulated response — no processing occurred."
+              },
+              {
+                "name": "environment",
+                "value": "={{ $json.environment }}"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "e1f2a3b4-5c6d-4e7f-8a9b-0c1d2e3f4a5b",
+        "name": "Sandbox Response",
+        "type": "n8n-nodes-base.set",
+        "typeVersion": 3,
+        "position": [850, 550]
+      }
+    ],
+    "connections": {
+      "Manual Trigger": {
+        "main": [
+          [
+            {
+              "node": "Load Environment",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Load Environment": {
+        "main": [
+          [
+            {
+              "node": "Env Toggle",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Env Toggle": {
+        "main": [
+          [
+            {
+              "node": "Generate Idempotency Key",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Sandbox Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Generate Idempotency Key": {
+        "main": [
+          [
+            {
+              "node": "Read MESSAGE_LEDGER",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Read MESSAGE_LEDGER": {
+        "main": [
+          [
+            {
+              "node": "Duplicate Check",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Duplicate Check": {
+        "main": [
+          [
+            {
+              "node": "Cached Response",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Process",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Process": {
+        "main": [
+          [
+            {
+              "node": "Log Success to MESSAGE_LEDGER",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Log Success to MESSAGE_LEDGER": {
+        "main": [
+          [
+            {
+              "node": "Done",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "timezone": "UTC",
+      "saveManualExecutions": true,
+      "saveExecutionProgress": true,
+      "errorWorkflow": "ERROR_WORKFLOW_ID"
+    },
+    "staticData": null,
+    "tags": [],
+    "versionId": "v1-main-0001"
+  }
+]

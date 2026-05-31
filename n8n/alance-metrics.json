@@ -1,0 +1,171 @@
+[
+  {
+    "name": "Alance V1 – Nightly Metrics",
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": {
+                  "cronExpression": "0 0 * * *"
+                }
+              }
+            ]
+          }
+        },
+        "id": "m001",
+        "name": "Schedule Trigger",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.1,
+        "position": [250, 300]
+      },
+      {
+        "parameters": {
+          "operation": "read",
+          "documentId": {
+            "__rl": true,
+            "mode": "id",
+            "value": "DUMMY_GOOGLE_SHEET_ID"
+          },
+          "sheetName": {
+            "__rl": true,
+            "mode": "list",
+            "value": "MESSAGE_LEDGER"
+          },
+          "options": {}
+        },
+        "id": "m002",
+        "name": "Read MESSAGE_LEDGER",
+        "type": "n8n-nodes-base.googleSheets",
+        "typeVersion": 4,
+        "position": [450, 200],
+        "credentials": {
+          "googleSheetsOAuth2Api": "GoogleSheetsAlance"
+        }
+      },
+      {
+        "parameters": {
+          "operation": "read",
+          "documentId": {
+            "__rl": true,
+            "mode": "id",
+            "value": "DUMMY_GOOGLE_SHEET_ID"
+          },
+          "sheetName": {
+            "__rl": true,
+            "mode": "list",
+            "value": "ERRORS"
+          },
+          "options": {}
+        },
+        "id": "m003",
+        "name": "Read ERRORS",
+        "type": "n8n-nodes-base.googleSheets",
+        "typeVersion": 4,
+        "position": [450, 400],
+        "credentials": {
+          "googleSheetsOAuth2Api": "GoogleSheetsAlance"
+        }
+      },
+      {
+        "parameters": {
+          "mode": "append"
+        },
+        "id": "m004",
+        "name": "Merge Data Sources",
+        "type": "n8n-nodes-base.merge",
+        "typeVersion": 2,
+        "position": [650, 300]
+      },
+      {
+        "parameters": {
+          "jsCode": "// ── Aggregate Daily Metrics ───────────────────────────────\n// Items come from Merge (append mode): MESSAGE_LEDGER rows + ERRORS rows.\n// Separate by field presence.\n\nconst today = new Date().toISOString().slice(0, 10);\n\nlet ledgerRows = [];\nlet errorRows = [];\n\nfor (const item of items) {\n  const d = item.json;\n  if (d.message_id) ledgerRows.push(d);\n  else if (d.error_message) errorRows.push(d);\n}\n\n// Filter for today's data\nconst todayLedger = ledgerRows.filter(r => (r.processed_at || '').slice(0, 10) === today);\nconst todayErrors = errorRows.filter(r => (r.timestamp || '').slice(0, 10) === today);\n\nconst totalMessages  = todayLedger.length;\nconst processedCount = todayLedger.filter(r => r.status === 'processed' || r.status === 'replied').length;\nconst cachedCount    = todayLedger.filter(r => r.status === 'cached' || r.status === 'delivery_update').length;\nconst driftCount     = todayLedger.filter(r => (r.status || '').includes('drift')).length;\nconst cancelCount    = todayLedger.filter(r => r.status === 'cancelled').length;\nconst bookingCount   = todayLedger.filter(r => r.status === 'booking_done').length;\n\nconst errorCount     = todayErrors.length;\nconst errorTypes     = [...new Set(todayErrors.map(r => r.error_type))];\nconst environment    = ledgerRows[0]?.environment || errorRows[0]?.environment || 'unknown';\n\nreturn [{\n  json: {\n    date:                 today,\n    total_messages:       totalMessages,\n    processed:            processedCount,\n    cached_duplicates:    cachedCount,\n    cancellations:        cancelCount,\n    bookings_completed:   bookingCount,\n    drift_events:         driftCount,\n    errors_total:         errorCount,\n    distinct_error_types: errorTypes.join(', '),\n    environment:          environment,\n    computed_at:          new Date().toISOString()\n  }\n}];"
+        },
+        "id": "m005",
+        "name": "Compute Metrics",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [850, 300]
+      },
+      {
+        "parameters": {
+          "operation": "append",
+          "documentId": {
+            "__rl": true,
+            "mode": "id",
+            "value": "DUMMY_GOOGLE_SHEET_ID"
+          },
+          "sheetName": {
+            "__rl": true,
+            "mode": "list",
+            "value": "HEALTHMETRICS"
+          },
+          "columns": {
+            "mappingMode": "defineBelow",
+            "value": {
+              "date": "={{ $json.date }}",
+              "total_messages": "={{ $json.total_messages }}",
+              "processed": "={{ $json.processed }}",
+              "cached_duplicates": "={{ $json.cached_duplicates }}",
+              "cancellations": "={{ $json.cancellations }}",
+              "bookings_completed": "={{ $json.bookings_completed }}",
+              "drift_events": "={{ $json.drift_events }}",
+              "errors_total": "={{ $json.errors_total }}",
+              "distinct_error_types": "={{ $json.distinct_error_types }}",
+              "environment": "={{ $json.environment }}",
+              "computed_at": "={{ $json.computed_at }}"
+            }
+          },
+          "options": {}
+        },
+        "id": "m006",
+        "name": "Append HEALTHMETRICS",
+        "type": "n8n-nodes-base.googleSheets",
+        "typeVersion": 4,
+        "position": [1050, 300],
+        "credentials": {
+          "googleSheetsOAuth2Api": "GoogleSheetsAlance"
+        }
+      },
+      {
+        "parameters": {
+          "content": "## Alance V1 Nightly Metrics\n\nRuns every midnight (cron: `0 0 * * *`).\n\n**Reads:** MESSAGE_LEDGER + ERRORS sheets\n**Writes to:** HEALTHMETRICS sheet\n\n**Credentials:** `GoogleSheetsAlance`\n**Placeholder:** `DUMMY_GOOGLE_SHEET_ID`"
+        },
+        "id": "m999",
+        "name": "README",
+        "type": "n8n-nodes-base.stickyNote",
+        "typeVersion": 1,
+        "position": [50, 100]
+      }
+    ],
+    "connections": {
+      "Schedule Trigger": {
+        "main": [[
+          { "node": "Read MESSAGE_LEDGER", "type": "main", "index": 0 },
+          { "node": "Read ERRORS", "type": "main", "index": 0 }
+        ]]
+      },
+      "Read MESSAGE_LEDGER": {
+        "main": [[{ "node": "Merge Data Sources", "type": "main", "index": 0 }]]
+      },
+      "Read ERRORS": {
+        "main": [[{ "node": "Merge Data Sources", "type": "main", "index": 1 }]]
+      },
+      "Merge Data Sources": {
+        "main": [[{ "node": "Compute Metrics", "type": "main", "index": 0 }]]
+      },
+      "Compute Metrics": {
+        "main": [[{ "node": "Append HEALTHMETRICS", "type": "main", "index": 0 }]]
+      }
+    },
+    "settings": {
+      "timezone": "UTC",
+      "saveManualExecutions": true,
+      "saveExecutionProgress": true
+    },
+    "staticData": null,
+    "tags": [],
+    "versionId": "v1-alance-metrics-0001"
+  }
+]

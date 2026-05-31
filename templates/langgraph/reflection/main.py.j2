@@ -114,7 +114,7 @@ graph = builder.compile()
 # Main
 # ---------------------------------------------------------------------------
 def main() -> None:
-    user_input = os.environ.get("USER_INPUT", "{{ system.example_input }}")
+    user_input = os.environ.get("USER_INPUT", {{ system.example_input | default("") | tojson }})
     print(f"User: {user_input}\n")
     print("=" * 60)
     print("  REFLECTION LOOP")

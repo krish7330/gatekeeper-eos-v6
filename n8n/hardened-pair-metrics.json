@@ -1,0 +1,202 @@
+[
+  {
+    "name": "Hardened Pair — Nightly Metrics",
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": {
+                  "cronExpression": "0 0 * * *"
+                }
+              }
+            ]
+          }
+        },
+        "id": "m000",
+        "name": "Schedule Trigger",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.1,
+        "position": [250, 300]
+      },
+      {
+        "parameters": {
+          "operation": "read",
+          "documentId": {
+            "__rl": true,
+            "mode": "id",
+            "value": "YOUR_GOOGLE_SHEET_ID"
+          },
+          "sheetName": {
+            "__rl": true,
+            "mode": "list",
+            "value": "MESSAGE_LEDGER"
+          },
+          "options": {}
+        },
+        "id": "m001",
+        "name": "Read MESSAGE_LEDGER",
+        "type": "n8n-nodes-base.googleSheets",
+        "typeVersion": 4,
+        "position": [450, 200]
+      },
+      {
+        "parameters": {
+          "operation": "read",
+          "documentId": {
+            "__rl": true,
+            "mode": "id",
+            "value": "YOUR_GOOGLE_SHEET_ID"
+          },
+          "sheetName": {
+            "__rl": true,
+            "mode": "list",
+            "value": "ERRORS"
+          },
+          "options": {}
+        },
+        "id": "m002",
+        "name": "Read ERRORS",
+        "type": "n8n-nodes-base.googleSheets",
+        "typeVersion": 4,
+        "position": [450, 400]
+      },
+      {
+        "parameters": {
+          "mode": "append"
+        },
+        "id": "m003",
+        "name": "Merge Data Sources",
+        "type": "n8n-nodes-base.merge",
+        "typeVersion": 2,
+        "position": [650, 300]
+      },
+      {
+        "parameters": {
+          "jsCode": "// ── Nightly Metrics Computation ──────────────────────────────\n// Items come from the Merge node, which concatenated:\n//   - MESSAGE_LEDGER rows (message_id, environment, input_preview, status, processed_at)\n//   - ERRORS rows (error_message, error_type, workflow_id, workflow_name, execution_id, last_node, severity, timestamp)\n//\n// We separate them by checking for known fields and filter for today's rows.\n\nconst today = new Date().toISOString().slice(0, 10);\n\nlet ledgerRows = [];\nlet errorRows = [];\n\nfor (const item of items) {\n  const d = item.json;\n  if (d.message_id) {\n    ledgerRows.push(d);\n  } else if (d.error_message) {\n    errorRows.push(d);\n  }\n}\n\n// Filter for today's rows only\nconst todayLedger = ledgerRows.filter(r => {\n  const dt = r.processed_at ? r.processed_at.slice(0, 10) : '';\n  return dt === today;\n});\n\nconst todayErrors = errorRows.filter(r => {\n  const dt = r.timestamp ? r.timestamp.slice(0, 10) : '';\n  return dt === today;\n});\n\nconst processedToday = todayLedger.filter(r => r.status === 'processed').length;\nconst cachedToday = todayLedger.filter(r => r.status === 'cached').length;\nconst totalToday = todayLedger.length;\nconst errorsToday = todayErrors.length;\nconst distinctErrorTypes = [...new Set(todayErrors.map(r => r.error_type))].length;\nconst environment = ledgerRows[0]?.environment || errorRows[0]?.environment || 'unknown';\n\n// Produce a single summary row\nreturn [{\n  json: {\n    date: today,\n    total_messages: totalToday,\n    processed_today: processedToday,\n    cached_today: cachedToday,\n    errors_today: errorsToday,\n    distinct_error_types: distinctErrorTypes,\n    drift_events_today: 0,\n    environment: environment,\n    computed_at: new Date().toISOString()\n  }\n}];\n"
+        },
+        "id": "m004",
+        "name": "Compute Metrics",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [850, 300]
+      },
+      {
+        "parameters": {
+          "operation": "append",
+          "documentId": {
+            "__rl": true,
+            "mode": "id",
+            "value": "YOUR_GOOGLE_SHEET_ID"
+          },
+          "sheetName": {
+            "__rl": true,
+            "mode": "list",
+            "value": "METRICS"
+          },
+          "columns": {
+            "mappingMode": "defineBelow",
+            "value": {
+              "date": "={{ $json.date }}",
+              "total_messages": "={{ $json.total_messages }}",
+              "processed_today": "={{ $json.processed_today }}",
+              "cached_today": "={{ $json.cached_today }}",
+              "errors_today": "={{ $json.errors_today }}",
+              "distinct_error_types": "={{ $json.distinct_error_types }}",
+              "drift_events_today": "={{ $json.drift_events_today }}",
+              "environment": "={{ $json.environment }}",
+              "computed_at": "={{ $json.computed_at }}"
+            }
+          },
+          "options": {}
+        },
+        "id": "m005",
+        "name": "Append METRICS",
+        "type": "n8n-nodes-base.googleSheets",
+        "typeVersion": 4,
+        "position": [1050, 300]
+      },
+      {
+        "parameters": {
+          "content": "## Nightly Metrics Workflow\n\nRuns every midnight (cron: `0 0 * * *`).\n\n**Reads:** MESSAGE_LEDGER + ERRORS sheets\n**Writes:** One summary row per day to the METRICS sheet\n\n**Columns written:** date, total_messages, processed_today, cached_today, errors_today, distinct_error_types, drift_events_today, environment, computed_at"
+        },
+        "id": "m999",
+        "name": "README",
+        "type": "n8n-nodes-base.stickyNote",
+        "typeVersion": 1,
+        "position": [50, 100]
+      }
+    ],
+    "connections": {
+      "Schedule Trigger": {
+        "main": [
+          [
+            {
+              "node": "Read MESSAGE_LEDGER",
+              "type": "main",
+              "index": 0
+            },
+            {
+              "node": "Read ERRORS",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Read MESSAGE_LEDGER": {
+        "main": [
+          [
+            {
+              "node": "Merge Data Sources",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Read ERRORS": {
+        "main": [
+          [
+            {
+              "node": "Merge Data Sources",
+              "type": "main",
+              "index": 1
+            }
+          ]
+        ]
+      },
+      "Merge Data Sources": {
+        "main": [
+          [
+            {
+              "node": "Compute Metrics",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Compute Metrics": {
+        "main": [
+          [
+            {
+              "node": "Append METRICS",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "timezone": "UTC",
+      "saveManualExecutions": true,
+      "saveExecutionProgress": true
+    },
+    "staticData": null,
+    "tags": [],
+    "versionId": "v1-metrics-0001"
+  }
+]

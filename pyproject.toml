@@ -10,6 +10,7 @@ requires-python = ">=3.11"
 dependencies = [
     "pyyaml>=6.0",
     "jinja2>=3.0",
+    "requests>=2.31",
 ]
 readme = "README.md"
 license = { text = "MIT" }
@@ -29,6 +30,7 @@ Repository = "https://github.com/krishanumala/gatekeeper-eos-v6.git"
 
 [project.scripts]
 factory = "gatekeeper_eos_v6.factory:main"
+bridge = "gatekeeper_eos_v6.bridge:main"
 
 [project.optional-dependencies]
 dev = [

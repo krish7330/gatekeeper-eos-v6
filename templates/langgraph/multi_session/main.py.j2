@@ -1,0 +1,355 @@
+"""
+{{ system.name }} - {{ system.description | trim }}
+Pattern: Multi-Session (LangGraph)
+
+Sessions run in parallel under a shared control plane:
+  {{ system.agents[0].name }}  — initializes scope, allowlist, expiry; checks drift/expiry each round
+  dispatcher  — runs all active sessions; each session receives the shared scope
+  {{ system.agents[1].name }} — reviews session outputs for scope violations
+"""
+
+from typing import TypedDict, Annotated, Sequence, Literal
+from operator import add
+import os
+from datetime import datetime, timedelta
+
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
+from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+
+
+# ---------------------------------------------------------------------------
+# Shared state for multi-session orchestration
+# ---------------------------------------------------------------------------
+class SessionResult(TypedDict):
+    session: str
+    summary: str
+    drift_flagged: bool
+    drift_reason: str | None
+
+
+class MultiSessionState(TypedDict):
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+    target_scope: str
+    allowlist: list[str]
+    expiry: str
+    evidence_log: Annotated[list[str], add]
+    drift_flags: Annotated[list[str], add]
+    session_results: Annotated[list[SessionResult], add]
+    active_sessions: list[str]
+    session_prompt: str
+    phase: str  # init | dispatch | check | finish
+    round: int
+
+
+# ---------------------------------------------------------------------------
+# Control plane: gatekeeper
+# ---------------------------------------------------------------------------
+{% set optional_sessions = system.get('metadata', {}).get('optional_agents', []) %}
+
+def {{ system.agents[0].name }}_node(state: MultiSessionState):
+    """Initialize shared state on first call. On subsequent calls, check
+    drift flags and expiry before granting another round.
+
+    Safe rules enforced here:
+      - No session may expand scope.
+      - No session may add tools.
+      - No session may continue after drift or expiry.
+    """
+    if state["phase"] == "init" or not state.get("target_scope"):
+        user_text = ""
+        if state.get("messages"):
+            last = state["messages"][-1]
+            user_text = getattr(last, "content", str(last))
+
+        user_lower = user_text.lower()
+
+        # Build active sessions: exclude optional ones by default,
+        # then conditionally activate if the plan authorizes it
+        active = [
+{% for session in system.agents[2:] %}
+{% if session.name not in optional_sessions %}
+            "{{ session.name }}",
+{% endif %}
+{% endfor %}
+        ]
+
+{% for session in system.agents[2:] %}
+{% if session.name in optional_sessions %}
+        # Optional session: activate only if plan explicitly authorizes it
+        if any(kw in user_lower for kw in ["{{ session.name }}", "privilege escalation", "privesc",
+                "escalate", "elevate", "lateral movement"]):
+            active.append("{{ session.name }}")
+{% endif %}
+{% endfor %}
+
+        return {
+            "target_scope": user_text,
+            "allowlist": [user_text],
+            "expiry": (datetime.now() + timedelta(hours=4)).isoformat(),
+            "active_sessions": active,
+            "session_prompt": user_text,
+            "phase": "dispatch",
+            "round": 1,
+        }
+
+    # Subsequent rounds: enforce safe rules
+    if state.get("drift_flags") and len(state["drift_flags"]) > 0:
+        latest_warnings = state["drift_flags"]
+        return {
+            "phase": "finish",
+            "active_sessions": [],
+            "messages": [
+                HumanMessage(
+                    content=f"Assessment halted — drift detected: {'; '.join(latest_warnings)}"
+                )
+            ],
+        }
+
+    if state.get("expiry"):
+        try:
+            if datetime.now() > datetime.fromisoformat(state["expiry"]):
+                return {
+                    "phase": "finish",
+                    "active_sessions": [],
+                    "messages": [HumanMessage(content="Assessment halted — session expired.")],
+                }
+        except (ValueError, TypeError):
+            pass
+
+    return {
+        "phase": "finish",
+        "active_sessions": [],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Session workers (dispatched in parallel by the dispatcher node)
+# ---------------------------------------------------------------------------
+{% for session in system.agents[2:] %}
+def {{ session.name }}_work(state: MultiSessionState) -> SessionResult:
+    """{{ session.instructions | trim }}"""
+    llm = ChatOpenAI(model="{{ system.model }}")
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """{{ session.instructions | trim }}
+
+AUTHORIZED SCOPE: {target_scope}
+ALLOWLIST: {allowlist}
+SESSION EXPIRY: {expiry}
+ROUND: {round}"""),
+        ("messages", "{messages}"),
+    ])
+    chain = prompt | llm
+    result = chain.invoke({
+        "target_scope": state.get("target_scope", "not set"),
+        "allowlist": ", ".join(state.get("allowlist", ["not set"])),
+        "expiry": state.get("expiry", "not set"),
+        "round": str(state.get("round", 1)),
+        "messages": state.get("messages", []),
+    })
+    return {
+        "session": "{{ session.name }}",
+        "summary": result.content if hasattr(result, "content") else str(result),
+        "drift_flagged": False,
+        "drift_reason": None,
+    }
+
+{% endfor %}
+
+# Map session names to their work functions
+SESSION_REGISTRY = {
+{% for session in system.agents[2:] %}
+    "{{ session.name }}": {{ session.name }}_work,
+{% endfor %}
+}
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher — runs all active sessions in parallel, collects results
+# ---------------------------------------------------------------------------
+def dispatcher_node(state: MultiSessionState):
+    """Run all active sessions. Each session receives the shared scope,
+    allowlist, and expiry from the control plane.
+
+    Hard-enforced safe rules:
+      - Check expiry before dispatching sessions.
+      - Skip sessions if expired.
+    """
+    active = state.get("active_sessions", [])
+    if not active:
+        return {"phase": "check", "session_results": []}
+
+    # Hard expiry check: don't dispatch sessions if expired
+    expired = False
+    if state.get("expiry"):
+        try:
+            if datetime.now() > datetime.fromisoformat(state["expiry"]):
+                expired = True
+        except (ValueError, TypeError):
+            pass
+
+    if expired:
+        return {
+            "phase": "check",
+            "session_results": [],
+            "evidence_log": ["[gatekeeper] Assessment expired — sessions not dispatched."],
+        }
+
+    results: list[SessionResult] = []
+    for session_name in active:
+        worker_fn = SESSION_REGISTRY.get(session_name)
+        if worker_fn is None:
+            continue
+        result = worker_fn(state)
+        results.append(result)
+
+    # Collect evidence from all sessions
+    evidence_entries = []
+    for r in results:
+        evidence_entries.append(f"[{r['session']}] {r['summary'][:200]}")
+        if r["drift_flagged"]:
+            evidence_entries.append(f"[DRIFT:{r['session']}] {r['drift_reason']}")
+
+    return {
+        "session_results": results,
+        "evidence_log": evidence_entries,
+        "phase": "check",
+        "round": state.get("round", 1) + 1,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Drift sentinel — checks all session outputs for scope violations
+# ---------------------------------------------------------------------------
+def {{ system.agents[1].name }}_node(state: MultiSessionState):
+    """Review all session outputs for scope drift or unsafe actions.
+    Flag any findings that fall outside the authorized scope.
+    """
+    drift_warnings: list[str] = []
+    for result in state.get("session_results", []):
+        if result["drift_flagged"] and result["drift_reason"]:
+            drift_warnings.append(
+                f"Session '{result['session']}': {result['drift_reason']}"
+            )
+
+    # Also run an LLM-based check on the combined output
+    if state.get("session_results"):
+        llm = ChatOpenAI(model="{{ system.model }}")
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a drift sentinel for a multi-session penetration test.
+Review the session outputs below against the authorized scope.
+
+AUTHORIZED SCOPE: {target_scope}
+
+Check each session's output for:
+1. Targets or systems not in the authorized scope
+2. Techniques or tools that would cause damage (no destructive actions)
+3. Data exfiltration or unauthorized access beyond what's needed
+
+If ALL sessions are within scope and safe, reply with "CLEAR".
+Otherwise, list each drift event with the session name and brief reason.
+
+Safe rules:
+- No session may expand scope.
+- No session may add tools.
+- Drift means stop immediately."""),
+            ("human", "Session results: {results}\n\nScope: {scope}"),
+        ])
+        chain = prompt | llm
+        scope_text = state.get("target_scope", "not set")
+        results_text = "\n".join(
+            f"[{r['session']}] {r['summary'][:500]}"
+            for r in state["session_results"]
+        )
+        check = chain.invoke({"target_scope": scope_text, "results": results_text, "scope": scope_text})
+        check_text = check.content.lower().strip() if hasattr(check, "content") else ""
+        if "clear" not in check_text:
+            drift_warnings.append(f"[sentinel] {check_text[:300]}")
+
+    return {
+        "drift_flags": drift_warnings if drift_warnings else [],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Graph construction
+# ---------------------------------------------------------------------------
+def route_{{ system.agents[0].name }}(state: MultiSessionState) -> Literal["dispatcher", "__end__"]:
+    """Route to dispatcher if still running, or end if finished."""
+    phase = state.get("phase", "")
+    active = state.get("active_sessions", [])
+    if phase == "finish" or not active:
+        return "__end__"
+    return "dispatcher"
+
+
+builder = StateGraph(MultiSessionState)
+
+builder.add_node("{{ system.agents[0].name }}", {{ system.agents[0].name }}_node)
+builder.add_node("dispatcher", dispatcher_node)
+builder.add_node("{{ system.agents[1].name }}", {{ system.agents[1].name }}_node)
+
+# Flow: START → gatekeeper → dispatcher → drift_sentinel → gatekeeper (loop) → END
+builder.add_edge(START, "{{ system.agents[0].name }}")
+builder.add_conditional_edges(
+    "{{ system.agents[0].name }}",
+    route_{{ system.agents[0].name }},
+    {"dispatcher": "dispatcher", "__end__": END},
+)
+builder.add_edge("dispatcher", "{{ system.agents[1].name }}")
+builder.add_edge("{{ system.agents[1].name }}", "{{ system.agents[0].name }}")
+
+graph = builder.compile()
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def main() -> None:
+    user_input = os.environ.get("USER_INPUT", {{ system.example_input | default("") | tojson }})
+    print(f"User: {user_input}\n")
+
+    result = graph.invoke({
+        "messages": [HumanMessage(content=user_input)],
+        "target_scope": user_input,
+        "allowlist": [user_input],
+        "expiry": (datetime.now() + timedelta(hours=4)).isoformat(),
+        "active_sessions": [
+{% for session in system.agents[2:] %}
+{% if session.name not in optional_sessions %}
+            "{{ session.name }}",
+{% endif %}
+{% endfor %}
+        ],
+        "session_prompt": user_input,
+        "phase": "init",
+        "round": 1,
+    })
+
+    print("=" * 60)
+    print("  MULTI-SESSION ASSESSMENT RESULTS")
+    print("=" * 60)
+
+    if result.get("drift_flags"):
+        print("\n  DRIFT WARNINGS:")
+        for w in result["drift_flags"]:
+            print(f"    ⚠  {w}")
+
+    if result.get("evidence_log"):
+        print("\n  EVIDENCE LOG:")
+        for entry in result["evidence_log"]:
+            print(f"    • {entry}")
+
+    print("\n  SESSION OUTPUTS:")
+    for msg in result.get("messages", []):
+        if hasattr(msg, "content") and msg.content and getattr(msg, "type", "") == "ai":
+            print(f"\n{msg.content}\n")
+
+    if result.get("phase") == "finish":
+        print("\n  Assessment complete — shared scope was enforced.")
+
+
+if __name__ == "__main__":
+    main()

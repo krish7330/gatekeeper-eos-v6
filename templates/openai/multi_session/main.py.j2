@@ -1,0 +1,153 @@
+"""
+{{ system.name }} - {{ system.description | trim }}
+Pattern: Multi-Session (OpenAI Agents SDK)
+
+Parallel session agents run under shared scope, allowlist, and expiry
+managed by a gatekeeper control plane.
+"""
+
+import os
+from datetime import datetime, timedelta
+from agents import Agent, Runner
+
+
+GATEKEEPER_NAME = "{{ system.agents[0].name }}"
+
+
+# ---------------------------------------------------------------------------
+# Drift sentinel agent (created at module level with static instructions)
+# ---------------------------------------------------------------------------
+DRIFT_SENTINEL_INSTRUCTIONS = """{{ system.agents[1].instructions | trim }}
+
+SCOPE: Will be provided at runtime.
+EXPIRY: Will be provided at runtime."""
+
+drift_sentinel_agent = Agent(
+    name="{{ system.agents[1].name }}",
+    instructions=DRIFT_SENTINEL_INSTRUCTIONS,
+    model="{{ system.model }}",
+)
+
+
+# ---------------------------------------------------------------------------
+# Gatekeeper control plane
+# ---------------------------------------------------------------------------
+def run_assessment(user_input: str) -> dict:
+    """Run the multi-session assessment with shared state enforcement."""
+
+    # Initialize shared state
+    scope = user_input
+    allowlist = [user_input]
+    expiry = (datetime.now() + timedelta(hours=4)).isoformat()
+    user_lower = user_input.lower()
+
+    # Build active sessions: exclude optional by default, activate if plan allows
+    active_sessions = [
+{% for session in system.agents[2:] %}
+{% if session.name not in system.get('metadata', {}).get('optional_agents', []) %}
+        "{{ session.name }}",
+{% endif %}
+{% endfor %}
+    ]
+
+    # Conditionally activate optional sessions
+{% for session in system.agents[2:] %}
+{% if session.name in system.get('metadata', {}).get('optional_agents', []) %}
+    if any(kw in user_lower for kw in ["privilege escalation", "privesc",
+            "escalate", "elevate", "lateral movement"]):
+        active_sessions.append("{{ session.name }}")
+{% endif %}
+{% endfor %}
+
+    # Create session agents at runtime with dynamically injected scope
+    scope_context = f"""
+AUTHORIZED SCOPE: {scope}
+ALLOWLIST: {', '.join(allowlist)}
+SESSION EXPIRY: {expiry}"""
+
+    session_agents = {}
+{% for session in system.agents[2:] %}
+    session_agents["{{ session.name }}"] = Agent(
+        name="{{ session.name }}",
+        instructions="""{{ session.instructions | trim }}\n""" + scope_context,
+        model="{{ system.model }}",
+    )
+{% endfor %}
+
+    # Run all active sessions
+    evidence_log = []
+    session_results = []
+    drift_flags = []
+
+    for session_name in active_sessions:
+        # Check expiry before each session
+        try:
+            if datetime.now() > datetime.fromisoformat(expiry):
+                drift_flags.append(f"[gatekeeper] Assessment expired — session '{session_name}' skipped.")
+                break
+        except (ValueError, TypeError):
+            pass
+
+        agent = session_agents.get(session_name)
+        if agent is None:
+            continue
+
+        result = Runner.run_sync(agent, user_input)
+        summary = result.final_output
+        session_results.append((session_name, summary))
+        evidence_log.append(f"[{session_name}] {summary[:200]}")
+
+    # Run drift sentinel with scope context in the input
+    combined_output = "\n".join(
+        f"[{s}] {c[:500]}" for s, c in session_results
+    )
+    sentinel_result = Runner.run_sync(
+        drift_sentinel_agent,
+        f"Session results:\n{combined_output}\n\nAUTHORIZED SCOPE: {scope}\nEXPIRY: {expiry}",
+    )
+    sentinel_text = sentinel_result.final_output.lower().strip()
+    if "clear" not in sentinel_text:
+        drift_flags.append(f"[sentinel] {sentinel_text[:300]}")
+
+    return {
+        "session_results": session_results,
+        "evidence_log": evidence_log,
+        "drift_flags": drift_flags,
+        "phase": "finish" if not drift_flags else "halted",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def main() -> None:
+    user_input = os.environ.get("USER_INPUT", {{ system.example_input | default("") | tojson }})
+    print(f"User: {user_input}\n")
+
+    result = run_assessment(user_input)
+
+    print("=" * 60)
+    print("  MULTI-SESSION ASSESSMENT RESULTS")
+    print("=" * 60)
+
+    if result["drift_flags"]:
+        print("\n  DRIFT WARNINGS:")
+        for w in result["drift_flags"]:
+            print(f"    ⚠  {w}")
+
+    if result["evidence_log"]:
+        print("\n  EVIDENCE LOG:")
+        for entry in result["evidence_log"]:
+            print(f"    • {entry}")
+
+    print()
+    for session_name, summary in result["session_results"]:
+        print(f"  [{session_name}]")
+        print(f"  {summary[:200]}")
+        print()
+
+    print("  Assessment complete — shared scope was enforced.")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.gatekeeper.eos-v6</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/krishanumala/.local/bin/uv</string>
+        <string>run</string>
+        <string>python</string>
+        <string>scripts/run_and_analyze.py</string>
+        <string>--quiet</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/krishanumala/Documents/Projects/gatekeeper-eos-v6</string>
+
+    <!-- Environment variables needed by the bridge -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/krishanumala/.local/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>PERPLEXITY_API_KEY</key>
+        <string></string>
+        <key>PIPELINE_CMD</key>
+        <string>make ci</string>
+    </dict>
+
+    <!-- Run nightly at 2:00 AM -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>2</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <!-- Standard I/O logging -->
+    <key>StandardOutPath</key>
+    <string>/Users/krishanumala/Documents/Projects/gatekeeper-eos-v6/logs/freebuff/launchd-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/krishanumala/Documents/Projects/gatekeeper-eos-v6/logs/freebuff/launchd-stderr.log</string>
+
+    <!-- Keep the process alive only while running -->
+    <key>KeepAlive</key>
+    <false/>
+
+    <!-- Run immediately if the scheduled time was missed (e.g., machine was asleep) -->
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

@@ -29,6 +29,7 @@ import ipaddress
 import json
 import re
 import time
+from abc import ABC, abstractmethod
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -483,6 +484,86 @@ class AgentAction:
 
 
 # ---------------------------------------------------------------------------
+# LLM provider — abstract interface for LLM-based action generation
+# ---------------------------------------------------------------------------
+
+
+class LLMProvider(ABC):
+    """Abstract interface for LLM-based action generation.
+
+    Implementations handle the actual LLM API call (OpenAI, Anthropic, etc.)
+    and return a raw response string that _select_with_llm parses into an
+    AgentAction.
+    """
+
+    def __init__(self, model: str = "default") -> None:
+        self.model = model
+
+    @abstractmethod
+    def generate(self, prompt: str) -> str:
+        """Send a prompt to the LLM and return the raw response text.
+
+        The response is expected to contain valid JSON that can be parsed
+        into an AgentAction dict (tool, command, arguments, target, reasoning).
+
+        Args:
+            prompt: The fully substituted prompt string with context.
+
+        Returns:
+            Raw response text from the LLM.
+        """
+        ...
+
+
+class MockLLMProvider(LLMProvider):
+    """Mock LLM provider for testing: returns a fixed AgentAction JSON.
+
+    Useful for testing the LLM integration path without an actual API call.
+    Tracks call_count and last_prompt for test assertions.
+    """
+
+    def __init__(self, model: str = "mock", default_action: dict[str, Any] | None = None) -> None:
+        super().__init__(model)
+        self.call_count = 0
+        self.last_prompt = ""
+        self._default_action = default_action or {
+            "tool": "nmap",
+            "command": "discover",
+            "arguments": {"target": "target"},
+            "target": "target",
+            "reasoning": "Mock LLM: default action",
+        }
+
+    def generate(self, prompt: str) -> str:
+        self.call_count += 1
+        self.last_prompt = prompt
+        return json.dumps(self._default_action)
+
+
+class RuleFallbackLLMProvider(LLMProvider):
+    """LLM provider that falls back to the deterministic rule engine.
+
+    This is the default provider used when no real LLM is configured.
+    It simulates the LLM by running the rule-based selector, which is useful
+    for development and testing without an API key.
+    """
+
+    def __init__(self, model: str = "rule-fallback") -> None:
+        super().__init__(model)
+        self.call_count = 0
+        self.last_prompt = ""
+        self._fallback = ActionSelector(decision_strategy="rule")
+
+    def generate(self, prompt: str) -> str:
+        """Parse the prompt context and return a rule-based action as JSON."""
+        self.call_count += 1
+        self.last_prompt = prompt
+        # The caller (_select_with_llm) handles the fallback to rules.
+        # This provider just signals "use rules" by returning an empty str.
+        return ""
+
+
+# ---------------------------------------------------------------------------
 # Action selector
 # ---------------------------------------------------------------------------
 
@@ -501,9 +582,11 @@ class ActionSelector:
         self,
         decision_strategy: str = "rule",
         llm_prompt: str | None = None,
+        llm_provider: LLMProvider | None = None,
     ) -> None:
         self.strategy = decision_strategy
         self.llm_prompt = llm_prompt
+        self.llm_provider = llm_provider
         self._last_rule_action: AgentAction | None = None
         self._stall_count: int = 0
         self._stall_threshold: int = 3  # consecutive identical actions before stall
@@ -511,6 +594,8 @@ class ActionSelector:
         self._state_snapshot: str = ""  # JSON fingerprint of last seen state
         self._stagnation_count: int = 0
         self._stagnation_threshold: int = 3
+        # Multi-asset rotation
+        self._asset_rotation_index: int = 0
 
     def _state_fingerprint(self, state: WorldState) -> str:
         """Produce a deterministic fingerprint of state progress fields."""
@@ -604,6 +689,7 @@ class ActionSelector:
         self._last_rule_action = None
         self._stagnation_count = 0
         self._state_snapshot = ""
+        self._asset_rotation_index = 0
 
     def _select_with_rules(
         self,
@@ -615,15 +701,23 @@ class ActionSelector:
         """Deterministic rule-based action selection.
 
         Phases based on the world model state:
-          1. If no open ports discovered → run recon on first asset
+          1. If no open ports discovered → run recon on next asset in rotation
           2. If open ports but no services → run service scan
           3. If services discovered → run vulnerability check
           4. If all done → report findings
 
-        Always targets the first authorized asset — multi-asset campaigns use the
-        hybrid strategy for target rotation.
+        Rotates through authorized_assets on each call so multi-asset campaigns
+        distribute work across all targets.
         """
-        target = authorized_assets[0] if authorized_assets else "target"
+        if not authorized_assets:
+            target = "target"
+        elif len(authorized_assets) == 1:
+            target = authorized_assets[0]
+        else:
+            # Multi-asset rotation: cycle through authorized assets
+            idx = self._asset_rotation_index % len(authorized_assets)
+            target = authorized_assets[idx]
+            self._asset_rotation_index = (self._asset_rotation_index + 1) % len(authorized_assets)
 
         # Choose tool based on what we know
         if not state.open_ports:
@@ -681,22 +775,42 @@ class ActionSelector:
     ) -> AgentAction:
         """LLM-based action selection using the configured prompt template.
 
-        Falls back to rule-based if no prompt is configured.
+        If an LLMProvider is configured, sends the prompt to the provider and
+        parses the JSON response into an AgentAction.
+
+        Falls back to rule-based if:
+          - No prompt is configured, OR
+          - No provider is configured, OR
+          - The provider returns empty/invalid JSON.
         """
         if not self.llm_prompt:
             return self._select_with_rules(state, allowed_tools, authorized_assets, step)
 
-        # Build the prompt with context (simulated LLM — in production this
-        # would call an actual LLM API)
+        # Build the prompt with context
         prompt = self.llm_prompt.replace("{{ allowed_tools }}", json.dumps(allowed_tools, indent=2))
         prompt = prompt.replace("{{ authorized_assets }}", json.dumps(authorized_assets))
         prompt = prompt.replace("{{ objective }}", objective)
         prompt = prompt.replace("{{ state }}", json.dumps(state.to_dict(), indent=2))
         prompt = prompt.replace("{{ step }}", str(step))
 
-        # In production, this calls the LLM and parses the JSON response.
-        # For now, the LLM simulation uses rule-based fallback so the
-        # orchestrator works without an actual LLM API.
+        # If we have an LLM provider, call it and parse the response
+        if self.llm_provider is not None:
+            response = self.llm_provider.generate(prompt)
+            if response:
+                try:
+                    data = json.loads(response)
+                    if isinstance(data, dict) and "tool" in data and "command" in data:
+                        return AgentAction(
+                            tool=data["tool"],
+                            command=data["command"],
+                            arguments=data.get("arguments", {}),
+                            target=data.get("target", ""),
+                            reasoning=data.get("reasoning", f"LLM decision (step {step})"),
+                        )
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        # Fall back to rule-based selection
         return self._select_with_rules(state, allowed_tools, authorized_assets, step)
 
     def _check_stalled(
@@ -983,6 +1097,9 @@ class AgentCore:
     # Rule engine config
     rule_engine_config: RuleEngineConfig | None = None
 
+    # LLM provider (optional, for LLM-based strategies)
+    llm_provider: LLMProvider | None = None
+
     # Optional: custom executor and drift checker (for testing)
     _action_selector: ActionSelector | None = None
     _drift_check_enabled: bool = True
@@ -1133,6 +1250,7 @@ class AgentCore:
             self._action_selector = ActionSelector(
                 decision_strategy=self.decision_strategy,
                 llm_prompt=self.llm_prompt,
+                llm_provider=self.llm_provider,
             )
         selector = self._action_selector
 
@@ -1165,6 +1283,7 @@ class AgentCore:
         self.halted = False
         self.stop_reason = None
         self._action_selector = None  # Clear selector stall tracking
+        # Note: llm_provider is NOT reset — it persists across runs
 
 
 # ---------------------------------------------------------------------------
@@ -1317,6 +1436,8 @@ def run_agent_loop(
     agent: AgentCore,
     execute_action: Callable[[AgentAction], dict[str, Any]],
     policy_gate: PolicyGate | None = None,
+    snapshot_ledger: Any = None,
+    session_id: str = "",
 ) -> tuple[WorldState, list[EvidenceEntry], StopReason | None]:
     """Run the full agent loop until a stop condition is met.
 
@@ -1324,10 +1445,16 @@ def run_agent_loop(
         agent: The AgentCore instance to run.
         execute_action: A callable that takes an AgentAction and returns output dict.
         policy_gate: Optional PolicyGate to validate actions before execution.
+        snapshot_ledger: Optional SnapshotLedger for auto-snapshot after each step.
+        session_id: Session identifier for snapshot labels.
 
     Returns:
         (final_state, evidence_log, stop_reason)
     """
+    # Lazy-import to avoid circular dependency at module level
+    if snapshot_ledger is not None:
+        from gatekeeper_eos_v6.snapshot import take_snapshot, context_revalidation as _restore
+
     while not agent.halted:
         try:
             # Get next action
@@ -1362,9 +1489,37 @@ def run_agent_loop(
             # Record the step
             agent.step_action(action, output)
 
+            # Auto-snapshot after each successful step
+            if snapshot_ledger is not None and session_id:
+                take_snapshot(
+                    agent=agent,
+                    session_id=session_id,
+                    checkpoint_id=f"CKPT-{agent.step:04d}-step",
+                    ledger=snapshot_ledger,
+                    drift_score=0,
+                    invariants_satisfied=[f"STEP_{agent.step}"],
+                    conversation_summary=(
+                        f"Step {agent.step}: {action.tool}/{action.command} "
+                        f"on {action.target}"
+                    ),
+                )
+
         except AgentStopTriggered:
             break
-        except AgentStateError:
+        except AgentStateError as e:
+            # Attempt snapshot restore on drift
+            if snapshot_ledger is not None and session_id:
+                try:
+                    entry, warnings = _restore(
+                        agent=agent,
+                        session_id=session_id,
+                        ledger=snapshot_ledger,
+                        max_drift_score=0,
+                    )
+                    # Restore succeeded — continue the loop with restored state
+                    continue
+                except Exception:
+                    pass  # Restore failed, stop the loop
             break
 
     return agent.state, agent.evidence_log, agent.stop_reason

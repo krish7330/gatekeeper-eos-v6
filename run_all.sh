@@ -1,6 +1,8 @@
 #!/usr/bin/env zsh
 # gatekeeper-eos-v6 - automated agent test runner
 # Usage: ./run_all.sh [model] ["custom input"]
+#
+# Full output is tee'd to logs/run_all_<timestamp>.log for easy copy/paste.
 
 MODEL=${1:-meta-llama/llama-4-scout-17b-16e-instruct}
 INPUT=${2:-""}
@@ -9,8 +11,12 @@ SUMMARY_MD="$LOG_DIR/summary.md"
 STAMP=$(date +%Y%m%d_%H%M%S)
 FALLBACK="llama-3.1-8b-instant"
 
+# ── Full-output log (tee capture) ────────────────────────────────
+RUN_LOG="$LOG_DIR/run_all_$STAMP.log"
 mkdir -p "$LOG_DIR"
+exec &> >(tee -a "$RUN_LOG")
 
+# ── Env ───────────────────────────────────────────────────────────
 export OPENAI_API_KEY=$(grep GROQ_API_KEY ~/.zshrc | cut -d= -f2)
 export OPENAI_BASE_URL='https://api.groq.com/openai/v1'
 export OPENAI_MODEL="$MODEL"
@@ -71,3 +77,4 @@ if [[ ${#FAIL_LIST[@]} -gt 0 ]]; then
   echo "Failed: ${FAIL_LIST[*]}"
 fi
 echo "Audit: $SUMMARY_MD"
+echo "Run log: $RUN_LOG"

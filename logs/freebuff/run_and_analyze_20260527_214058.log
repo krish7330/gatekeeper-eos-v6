@@ -1,0 +1,251 @@
+SKIP_PRECOMMIT=1 /Library/Developer/CommandLineTools/usr/bin/make dry-run
+uv run python -m gatekeeper_eos_v6 specs/batch.yaml --dry-run
+Generating 21 system(s) to stdout …
+[dry-run] customer-support-openai/
+  main.py (1826 chars)
+  requirements.txt (55 chars)
+  README.md (1230 chars)
+  AGENTS.md (1294 chars)
+  system.yaml (1048 chars)
+[dry-run] research-assistant-langgraph/
+  main.py (4386 chars)
+  requirements.txt (97 chars)
+  README.md (1141 chars)
+  AGENTS.md (1070 chars)
+  system.yaml (851 chars)
+[dry-run] code-review-langgraph/
+  main.py (4077 chars)
+  requirements.txt (97 chars)
+  README.md (1132 chars)
+  AGENTS.md (1007 chars)
+  system.yaml (808 chars)
+[dry-run] content-pipeline-openai/
+  main.py (2391 chars)
+  requirements.txt (55 chars)
+  README.md (1258 chars)
+  AGENTS.md (1363 chars)
+  system.yaml (1100 chars)
+[dry-run] data-pipeline-chain/
+  main.py (2399 chars)
+  requirements.txt (55 chars)
+  README.md (1120 chars)
+  AGENTS.md (1118 chars)
+  system.yaml (980 chars)
+[dry-run] content-moderation-chain/
+  main.py (4505 chars)
+  requirements.txt (97 chars)
+  README.md (1142 chars)
+  AGENTS.md (1287 chars)
+  system.yaml (1195 chars)
+[dry-run] market-analysis-broadcast/
+  main.py (3157 chars)
+  requirements.txt (55 chars)
+  README.md (1348 chars)
+  AGENTS.md (1637 chars)
+  system.yaml (1444 chars)
+[dry-run] code-audit-broadcast/
+  main.py (6997 chars)
+  requirements.txt (97 chars)
+  README.md (1343 chars)
+  AGENTS.md (1697 chars)
+  system.yaml (1491 chars)
+[dry-run] essay-writer-reflection/
+  main.py (3821 chars)
+  requirements.txt (55 chars)
+  README.md (1090 chars)
+  AGENTS.md (999 chars)
+  system.yaml (1021 chars)
+[dry-run] policy-debate-openai/
+  main.py (3954 chars)
+  requirements.txt (20 chars)
+  README.md (1267 chars)
+  AGENTS.md (1669 chars)
+  system.yaml (1497 chars)
+[dry-run] legal-verdict-langgraph/
+  main.py (7018 chars)
+  requirements.txt (62 chars)
+  README.md (1259 chars)
+  AGENTS.md (1728 chars)
+  system.yaml (1685 chars)
+[dry-run] healthcare-triage/
+  main.py (2488 chars)
+  requirements.txt (55 chars)
+  README.md (1287 chars)
+  AGENTS.md (1848 chars)
+  system.yaml (1700 chars)
+[dry-run] project-manager/
+  main.py (5968 chars)
+  requirements.txt (97 chars)
+  README.md (1308 chars)
+  AGENTS.md (1729 chars)
+  system.yaml (1537 chars)
+[dry-run] content-research/
+  main.py (2962 chars)
+  requirements.txt (55 chars)
+  README.md (1294 chars)
+  AGENTS.md (1919 chars)
+  system.yaml (1743 chars)
+[dry-run] code-review-reflection/
+  main.py (5453 chars)
+  requirements.txt (97 chars)
+  README.md (1078 chars)
+  AGENTS.md (1029 chars)
+  system.yaml (1024 chars)
+[dry-run] risk-assessment-consensus/
+  main.py (5413 chars)
+  requirements.txt (55 chars)
+  README.md (1513 chars)
+  AGENTS.md (2578 chars)
+  system.yaml (2501 chars)
+[dry-run] feature-planner/
+  main.py (6534 chars)
+  requirements.txt (97 chars)
+  README.md (1224 chars)
+  AGENTS.md (1551 chars)
+  system.yaml (1561 chars)
+[dry-run] security-threat-consensus/
+  main.py (9078 chars)
+  requirements.txt (97 chars)
+  README.md (1475 chars)
+  AGENTS.md (2492 chars)
+  system.yaml (2379 chars)
+[dry-run] document-pipeline-planner/
+  main.py (7402 chars)
+  requirements.txt (55 chars)
+  README.md (1473 chars)
+  AGENTS.md (2403 chars)
+  system.yaml (2306 chars)
+[dry-run] incident-classifier/
+  main.py (8047 chars)
+  requirements.txt (97 chars)
+  README.md (1469 chars)
+  AGENTS.md (2582 chars)
+  system.yaml (2462 chars)
+[dry-run] clinical-trial-planner/
+  main.py (8341 chars)
+  requirements.txt (55 chars)
+  README.md (1540 chars)
+  AGENTS.md (2885 chars)
+  system.yaml (2870 chars)
+
+Done — 21 system(s) previewed (no files written)
+SKIP_PRECOMMIT=1 /Library/Developer/CommandLineTools/usr/bin/make test
+uv run python -m pytest tests/ -v
+============================= test session starts ==============================
+platform darwin -- Python 3.14.5, pytest-9.0.3, pluggy-1.6.0 -- /Users/krishanumala/Documents/Projects/gatekeeper-eos-v6/.venv/bin/python3
+cachedir: .pytest_cache
+rootdir: /Users/krishanumala/Documents/Projects/gatekeeper-eos-v6
+configfile: pyproject.toml
+plugins: langsmith-0.8.5, anyio-4.13.0
+collecting ... collected 105 items
+
+tests/test_generation.py::test_generate_readme_contains_name PASSED      [  0%]
+tests/test_generation.py::test_generate_readme_contains_target PASSED    [  1%]
+tests/test_generation.py::test_generate_readme_contains_agents PASSED    [  2%]
+tests/test_generation.py::test_generate_agents_md_contains_instructions PASSED [  3%]
+tests/test_generation.py::test_generate_system_creates_files[agents_as_tools-langgraph] PASSED [  4%]
+tests/test_generation.py::test_generate_system_creates_files[agents_as_tools-openai] PASSED [  5%]
+tests/test_generation.py::test_generate_system_creates_files[broadcast-langgraph] PASSED [  6%]
+tests/test_generation.py::test_generate_system_creates_files[broadcast-openai] PASSED [  7%]
+tests/test_generation.py::test_generate_system_creates_files[chain-langgraph] PASSED [  8%]
+tests/test_generation.py::test_generate_system_creates_files[chain-openai] PASSED [  9%]
+tests/test_generation.py::test_generate_system_creates_files[consensus-langgraph] PASSED [ 10%]
+tests/test_generation.py::test_generate_system_creates_files[consensus-openai] PASSED [ 11%]
+tests/test_generation.py::test_generate_system_creates_files[debate-langgraph] PASSED [ 12%]
+tests/test_generation.py::test_generate_system_creates_files[debate-openai] PASSED [ 13%]
+tests/test_generation.py::test_generate_system_creates_files[handoffs-langgraph] PASSED [ 14%]
+tests/test_generation.py::test_generate_system_creates_files[handoffs-openai] PASSED [ 15%]
+tests/test_generation.py::test_generate_system_creates_files[planner_executor-langgraph] PASSED [ 16%]
+tests/test_generation.py::test_generate_system_creates_files[planner_executor-openai] PASSED [ 17%]
+tests/test_generation.py::test_generate_system_creates_files[reflection-langgraph] PASSED [ 18%]
+tests/test_generation.py::test_generate_system_creates_files[reflection-openai] PASSED [ 19%]
+tests/test_generation.py::test_generate_system_creates_files[router_manager-langgraph] PASSED [ 20%]
+tests/test_generation.py::test_generate_system_creates_files[router_manager-openai] PASSED [ 20%]
+tests/test_generation.py::test_generate_system_creates_files[supervisor_workers-langgraph] PASSED [ 21%]
+tests/test_generation.py::test_generate_system_creates_files[supervisor_workers-openai] PASSED [ 22%]
+tests/test_generation.py::test_generated_main_includes_agents[agents_as_tools-langgraph] PASSED [ 23%]
+tests/test_generation.py::test_generated_main_includes_agents[agents_as_tools-openai] PASSED [ 24%]
+tests/test_generation.py::test_generated_main_includes_agents[broadcast-langgraph] PASSED [ 25%]
+tests/test_generation.py::test_generated_main_includes_agents[broadcast-openai] PASSED [ 26%]
+tests/test_generation.py::test_generated_main_includes_agents[chain-langgraph] PASSED [ 27%]
+tests/test_generation.py::test_generated_main_includes_agents[chain-openai] PASSED [ 28%]
+tests/test_generation.py::test_generated_main_includes_agents[consensus-langgraph] PASSED [ 29%]
+tests/test_generation.py::test_generated_main_includes_agents[consensus-openai] PASSED [ 30%]
+tests/test_generation.py::test_generated_main_includes_agents[debate-langgraph] PASSED [ 31%]
+tests/test_generation.py::test_generated_main_includes_agents[debate-openai] PASSED [ 32%]
+tests/test_generation.py::test_generated_main_includes_agents[handoffs-langgraph] PASSED [ 33%]
+tests/test_generation.py::test_generated_main_includes_agents[handoffs-openai] PASSED [ 34%]
+tests/test_generation.py::test_generated_main_includes_agents[planner_executor-langgraph] PASSED [ 35%]
+tests/test_generation.py::test_generated_main_includes_agents[planner_executor-openai] PASSED [ 36%]
+tests/test_generation.py::test_generated_main_includes_agents[reflection-langgraph] PASSED [ 37%]
+tests/test_generation.py::test_generated_main_includes_agents[reflection-openai] PASSED [ 38%]
+tests/test_generation.py::test_generated_main_includes_agents[router_manager-langgraph] PASSED [ 39%]
+tests/test_generation.py::test_generated_main_includes_agents[router_manager-openai] PASSED [ 40%]
+tests/test_generation.py::test_generated_main_includes_agents[supervisor_workers-langgraph] PASSED [ 40%]
+tests/test_generation.py::test_generated_main_includes_agents[supervisor_workers-openai] PASSED [ 41%]
+tests/test_generation.py::test_generate_all_processes_all_systems PASSED [ 42%]
+tests/test_generation.py::test_preview_verbose_shows_line_counts[langgraph] PASSED [ 43%]
+tests/test_generation.py::test_preview_verbose_shows_line_counts[openai] PASSED [ 44%]
+tests/test_generation.py::test_preview_mode_does_not_write_files[langgraph] PASSED [ 45%]
+tests/test_generation.py::test_preview_mode_does_not_write_files[openai] PASSED [ 46%]
+tests/test_generation.py::test_generated_files_have_consistent_python_syntax PASSED [ 47%]
+tests/test_generation.py::test_dry_run_writes_no_files PASSED            [ 48%]
+tests/test_new_specs.py::test_security_threat_spec_exists PASSED         [ 49%]
+tests/test_new_specs.py::test_security_threat_has_correct_target PASSED  [ 50%]
+tests/test_new_specs.py::test_security_threat_has_correct_pattern PASSED [ 51%]
+tests/test_new_specs.py::test_security_threat_has_five_agents PASSED     [ 52%]
+tests/test_new_specs.py::test_security_threat_agent_names PASSED         [ 53%]
+tests/test_new_specs.py::test_security_threat_last_agent_is_synthesizer PASSED [ 54%]
+tests/test_new_specs.py::test_security_threat_all_agents_have_instructions PASSED [ 55%]
+tests/test_new_specs.py::test_security_threat_generates_successfully PASSED [ 56%]
+tests/test_new_specs.py::test_security_threat_generated_code_mentions_all_agents PASSED [ 57%]
+tests/test_new_specs.py::test_consensus_without_synthesizer_still_generates PASSED [ 58%]
+tests/test_new_specs.py::test_consensus_with_empty_agents_raises_validation_error PASSED [ 59%]
+tests/test_new_specs.py::test_document_pipeline_spec_exists PASSED       [ 60%]
+tests/test_new_specs.py::test_document_pipeline_has_correct_target PASSED [ 60%]
+tests/test_new_specs.py::test_document_pipeline_has_correct_pattern PASSED [ 61%]
+tests/test_new_specs.py::test_document_pipeline_has_five_agents PASSED   [ 62%]
+tests/test_new_specs.py::test_document_pipeline_agent_names PASSED       [ 63%]
+tests/test_new_specs.py::test_document_pipeline_first_agent_is_planner PASSED [ 64%]
+tests/test_new_specs.py::test_document_pipeline_last_agent_is_verifier PASSED [ 65%]
+tests/test_new_specs.py::test_document_pipeline_all_agents_have_instructions PASSED [ 66%]
+tests/test_new_specs.py::test_document_pipeline_generates_successfully PASSED [ 67%]
+tests/test_new_specs.py::test_document_pipeline_generated_code_mentions_all_agents PASSED [ 68%]
+tests/test_new_specs.py::test_planner_executor_with_two_agents_generates PASSED [ 69%]
+tests/test_new_specs.py::test_all_new_specs_have_example_input PASSED    [ 70%]
+tests/test_new_specs.py::test_all_new_specs_have_description PASSED      [ 71%]
+tests/test_new_specs.py::test_all_new_specs_generated_code_is_valid_python PASSED [ 72%]
+tests/test_spec_parsing.py::test_load_spec PASSED                        [ 73%]
+tests/test_spec_parsing.py::test_load_spec_missing_file PASSED           [ 74%]
+tests/test_spec_parsing.py::test_validate_spec_valid PASSED              [ 75%]
+tests/test_spec_parsing.py::test_validate_spec_empty_systems PASSED      [ 76%]
+tests/test_spec_parsing.py::test_validate_spec_no_systems PASSED         [ 77%]
+tests/test_spec_parsing.py::test_validate_spec_missing_name PASSED       [ 78%]
+tests/test_spec_parsing.py::test_validate_spec_invalid_target PASSED     [ 79%]
+tests/test_spec_parsing.py::test_validate_spec_invalid_pattern PASSED    [ 80%]
+tests/test_spec_parsing.py::test_validate_spec_missing_agents PASSED     [ 80%]
+tests/test_spec_parsing.py::test_all_target_pattern_combinations[agents_as_tools-langgraph] PASSED [ 81%]
+tests/test_spec_parsing.py::test_all_target_pattern_combinations[agents_as_tools-openai] PASSED [ 82%]
+tests/test_spec_parsing.py::test_all_target_pattern_combinations[broadcast-langgraph] PASSED [ 83%]
+tests/test_spec_parsing.py::test_all_target_pattern_combinations[broadcast-openai] PASSED [ 84%]
+tests/test_spec_parsing.py::test_all_target_pattern_combinations[chain-langgraph] PASSED [ 85%]
+tests/test_spec_parsing.py::test_all_target_pattern_combinations[chain-openai] PASSED [ 86%]
+tests/test_spec_parsing.py::test_all_target_pattern_combinations[consensus-langgraph] PASSED [ 87%]
+tests/test_spec_parsing.py::test_all_target_pattern_combinations[consensus-openai] PASSED [ 88%]
+tests/test_spec_parsing.py::test_all_target_pattern_combinations[debate-langgraph] PASSED [ 89%]
+tests/test_spec_parsing.py::test_all_target_pattern_combinations[debate-openai] PASSED [ 90%]
+tests/test_spec_parsing.py::test_all_target_pattern_combinations[handoffs-langgraph] PASSED [ 91%]
+tests/test_spec_parsing.py::test_all_target_pattern_combinations[handoffs-openai] PASSED [ 92%]
+tests/test_spec_parsing.py::test_all_target_pattern_combinations[planner_executor-langgraph] PASSED [ 93%]
+tests/test_spec_parsing.py::test_all_target_pattern_combinations[planner_executor-openai] PASSED [ 94%]
+tests/test_spec_parsing.py::test_all_target_pattern_combinations[reflection-langgraph] PASSED [ 95%]
+tests/test_spec_parsing.py::test_all_target_pattern_combinations[reflection-openai] PASSED [ 96%]
+tests/test_spec_parsing.py::test_all_target_pattern_combinations[router_manager-langgraph] PASSED [ 97%]
+tests/test_spec_parsing.py::test_all_target_pattern_combinations[router_manager-openai] PASSED [ 98%]
+tests/test_spec_parsing.py::test_all_target_pattern_combinations[supervisor_workers-langgraph] PASSED [ 99%]
+tests/test_spec_parsing.py::test_all_target_pattern_combinations[supervisor_workers-openai] PASSED [100%]
+
+============================= 105 passed in 0.41s ==============================
+
+
+  🏁  Dry run — Perplexity analysis skipped

@@ -1,0 +1,91 @@
+[
+  {
+    "name": "Hardened Pair — Error Handler",
+    "nodes": [
+      {
+        "parameters": {},
+        "id": "f2a3b4c5-6d7e-4f8a-9b0c-1d2e3f4a5b6c",
+        "name": "Error Trigger",
+        "type": "n8n-nodes-base.errorTrigger",
+        "typeVersion": 1,
+        "position": [250, 300]
+      },
+      {
+        "parameters": {
+          "jsCode": "// Format the error payload for structured logging.\n// The Error Trigger node provides:\n//   $json.error.message       — error message string\n//   $json.error.name          — error type (e.g. Error, TypeError)\n//   $json.workflow.id         — failing workflow ID\n//   $json.workflow.name       — failing workflow name\n//   $json.execution.id        — execution ID\n//   $json.lastNodeExecuted    — name of the node that failed\n//   $json.timestamp           — when the error occurred\n\nreturn items.map(item => {\n  const err = item.json.error || {};\n  const wf = item.json.workflow || {};\n  return {\n    json: {\n      error_message: String(err.message || 'Unknown error').slice(0, 500),\n      error_type: err.name || 'Error',\n      workflow_id: wf.id || 'unknown',\n      workflow_name: wf.name || 'unknown',\n      execution_id: item.json.execution?.id || 'unknown',\n      last_node: item.json.lastNodeExecuted || 'unknown',\n      error_timestamp: item.json.timestamp || new Date().toISOString(),\n      severity: 'error',\n      raw_preview: JSON.stringify(item.json).slice(0, 1000)\n    }\n  };\n});"
+        },
+        "id": "a3b4c5d6-7e8f-4a9b-0c1d-2e3f4a5b6c7d",
+        "name": "Format Error Record",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [450, 300]
+      },
+      {
+        "parameters": {
+          "operation": "append",
+          "documentId": {
+            "__rl": true,
+            "mode": "id",
+            "value": "YOUR_GOOGLE_SHEET_ID"
+          },
+          "sheetName": {
+            "__rl": true,
+            "mode": "list",
+            "value": "ERRORS"
+          },
+          "columns": {
+            "mappingMode": "defineBelow",
+            "value": {
+              "error_message": "={{ $json.error_message }}",
+              "error_type": "={{ $json.error_type }}",
+              "workflow_id": "={{ $json.workflow_id }}",
+              "workflow_name": "={{ $json.workflow_name }}",
+              "execution_id": "={{ $json.execution_id }}",
+              "last_node": "={{ $json.last_node }}",
+              "severity": "={{ $json.severity }}",
+              "timestamp": "={{ $json.error_timestamp }}"
+            }
+          },
+          "options": {}
+        },
+        "id": "b4c5d6e7-8f9a-4b0c-1d2e-3f4a5b6c7d8e",
+        "name": "Log Error to ERRORS Sheet",
+        "type": "n8n-nodes-base.googleSheets",
+        "typeVersion": 4,
+        "position": [650, 300]
+      }
+    ],
+    "connections": {
+      "Error Trigger": {
+        "main": [
+          [
+            {
+              "node": "Format Error Record",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Format Error Record": {
+        "main": [
+          [
+            {
+              "node": "Log Error to ERRORS Sheet",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "timezone": "UTC",
+      "saveManualExecutions": true,
+      "saveExecutionProgress": true
+    },
+    "staticData": null,
+    "tags": [],
+    "versionId": "v1-error-0001"
+  }
+]

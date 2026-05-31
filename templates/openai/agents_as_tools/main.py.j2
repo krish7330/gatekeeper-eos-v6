@@ -38,7 +38,7 @@ specialist_tools = [
 
 async def main() -> None:
     """Run the orchestrator workflow with agents-as-tools."""
-    user_input = os.environ.get("USER_INPUT", "{{ system.example_input }}")
+    user_input = os.environ.get("USER_INPUT", {{ system.example_input | default("") | tojson }})
     print(f"User: {user_input}\n")
 
     result = await Runner.run({{ system.agents[0].name }}_agent, user_input)

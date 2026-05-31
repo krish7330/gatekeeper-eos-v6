@@ -25,6 +25,9 @@ from gatekeeper_eos_v6.agentic import (
     PolicyGate,
     FindingSummary,
     RuleEngineConfig,
+    LLMProvider,
+    MockLLMProvider,
+    RuleFallbackLLMProvider,
     AgenticError,
     AgentStateError,
     AgentActionError,
@@ -466,6 +469,133 @@ class TestActionSelector:
         tool = ActionSelector._find_tool(sample_allowed_tools, "scanner", "cve")
         assert tool is not None
         assert "vuln-scanner" in tool["name"]
+
+    # --- Multi-asset rotation ---
+
+    def test_rotation_cycles_through_assets(self, sample_allowed_tools):
+        """With 3 authorized assets, selector rotates through all of them."""
+        selector = ActionSelector(decision_strategy="rule")
+        assets = ["10.0.0.10", "10.0.0.11", "10.0.0.12"]
+        state = WorldState()  # Empty — triggers recon, same tool each call
+
+        targets = []
+        for i in range(6):
+            action = selector.select_action(
+                state, sample_allowed_tools, assets,
+                "Rotate test", step=i + 1, previous_actions=[],
+            )
+            targets.append(action.target)
+
+        # Should rotate through 10.0.0.10 -> 10.0.0.11 -> 10.0.0.12 -> 10.0.0.10 -> ...
+        assert targets == ["10.0.0.10", "10.0.0.11", "10.0.0.12", "10.0.0.10", "10.0.0.11", "10.0.0.12"]
+
+    def test_rotation_single_asset_no_cycle(self, sample_allowed_tools):
+        """Single authorized asset → no rotation, always same target."""
+        selector = ActionSelector(decision_strategy="rule")
+        assets = ["10.0.0.10"]
+        state = WorldState()
+
+        targets = []
+        for i in range(3):
+            action = selector.select_action(
+                state, sample_allowed_tools, assets,
+                "Single test", step=i + 1, previous_actions=[],
+            )
+            targets.append(action.target)
+
+        # All calls should target the same single asset
+        assert targets == ["10.0.0.10", "10.0.0.10", "10.0.0.10"]
+
+    def test_rotation_no_assets_uses_fallback(self, sample_allowed_tools):
+        """Empty authorized_assets → fallback target string."""
+        selector = ActionSelector(decision_strategy="rule")
+        action = selector.select_action(
+            WorldState(), sample_allowed_tools, [],
+            "No assets", step=1, previous_actions=[],
+        )
+        assert action.target == "target"
+
+    def test_rotation_preserves_index_across_calls(self, sample_allowed_tools):
+        """State changes (different phases) should not reset the rotation index."""
+        selector = ActionSelector(decision_strategy="rule")
+        assets = ["10.0.0.10", "10.0.0.11", "10.0.0.12"]
+
+        # Call 1: empty state → recon → target 10.0.0.10
+        state = WorldState()
+        a1 = selector.select_action(state, sample_allowed_tools, assets, "Test", step=1, previous_actions=[])
+        assert a1.target == "10.0.0.10"
+
+        # Call 2: state with ports → fingerprint → target 10.0.0.11 (rotated)
+        state = WorldState(open_ports=[80])
+        a2 = selector.select_action(state, sample_allowed_tools, assets, "Test", step=2, previous_actions=[])
+        assert a2.target == "10.0.0.11"
+
+        # Call 3: state with services → vuln scan → target 10.0.0.12 (rotated)
+        state = WorldState(open_ports=[80], services=[{"name": "nginx"}])
+        a3 = selector.select_action(state, sample_allowed_tools, assets, "Test", step=3, previous_actions=[])
+        assert a3.target == "10.0.0.12"
+
+    def test_rotation_hybrid_preserves_stall_detection(self, sample_allowed_tools):
+        """Hybrid strategy with asset rotation: target changes don't prevent stall
+        because _check_tool_loop checks tool+command, not target."""
+        selector = ActionSelector(decision_strategy="hybrid")
+        assets = ["10.0.0.10", "10.0.0.11", "10.0.0.12"]
+        state = WorldState(open_ports=[80])  # Keeps in fingerprint → same tool/command
+
+        for i in range(5):
+            action = selector.select_action(
+                state, sample_allowed_tools, assets,
+                "Stall test", step=i + 1, previous_actions=[],
+            )
+            if i >= 3:
+                # Despite target rotation, stall should trigger because
+                # tool (nmap) and command (scan) are identical
+                assert "RULE_ENGINE_STALLED" in action.reasoning
+
+    def test_rotation_reset_after_stall_reset(self):
+        """_reset_stall should reset the rotation index to 0."""
+        selector = ActionSelector(decision_strategy="rule")
+        assets = ["10.0.0.10", "10.0.0.11", "10.0.0.12"]
+
+        # Advance rotation to index 2
+        for i in range(3):
+            action = selector.select_action(
+                WorldState(), [{"name": "nmap", "allowed_commands": ["discover"]}], assets,
+                "Test", step=i + 1, previous_actions=[],
+            )
+        assert action.target == "10.0.0.12"  # index 2
+
+        # Reset stall (which also resets rotation index)
+        selector._reset_stall()
+
+        # Next action should target index 0 again
+        action = selector.select_action(
+            WorldState(), [{"name": "nmap", "allowed_commands": ["discover"]}], assets,
+            "Test", step=4, previous_actions=[],
+        )
+        assert action.target == "10.0.0.10"
+
+    def test_rotation_reset_within_agent_core(self, sample_allowed_tools, sample_authorized_assets):
+        """AgentCore.reset() clears the selector, which resets rotation index."""
+        agent = AgentCore(
+            allowed_tools=sample_allowed_tools,
+            authorized_assets=["10.0.0.10", "10.0.0.11"],
+            objective="Reset rotation test",
+            decision_strategy="rule",
+            max_steps=10,
+        )
+
+        # Run a few steps — advances rotation index
+        for i in range(3):
+            action = agent.get_next_action()
+            agent.step_action(action, {"open_ports": [80 + i]})
+
+        # Reset the agent
+        agent.reset()
+
+        # First action after reset should target index 0 (10.0.0.10)
+        action = agent.get_next_action()
+        assert action.target == "10.0.0.10"
 
 
 # ===========================================================================
@@ -989,6 +1119,301 @@ class TestRunAgentLoop:
         # The output violation should be recorded
         last_entry = evidence[-1]
         assert "evil.com" in json.dumps(last_entry.to_dict())
+
+    # --- Checkpoint integration ---
+
+    def test_loop_with_snapshots_writes_ledger(self, sample_allowed_tools, sample_authorized_assets, tmp_path):
+        """run_agent_loop with snapshot_ledger writes snapshot entries."""
+        from gatekeeper_eos_v6.snapshot import SnapshotLedger
+
+        l = SnapshotLedger(tmp_path / "ckpt_ledger.json")
+        agent = AgentCore(
+            allowed_tools=sample_allowed_tools,
+            authorized_assets=sample_authorized_assets,
+            objective="Checkpoint test",
+            decision_strategy="rule",
+            max_steps=3,
+            stop_on_criteria_met=False,
+            stop_on_finding="none",
+        )
+
+        def execute(action):
+            return {"open_ports": [80, 443], "services": [{"name": "nginx"}]}
+
+        state, evidence, reason = run_agent_loop(agent, execute, snapshot_ledger=l, session_id="SESS-ckpt")
+
+        # Should have written snapshots for each step
+        assert l.index.size >= 2, f"Expected ≥2 snapshot entries, got {l.index.size}"
+        violations = l.verify_integrity()
+        assert violations == [], f"Hash chain broken: {violations}"
+
+    def test_loop_drift_recovery_continues(self, sample_allowed_tools, sample_authorized_assets, tmp_path):
+        """Drift during loop is recovered via snapshot restore; loop continues."""
+        from gatekeeper_eos_v6.snapshot import SnapshotLedger
+
+        l = SnapshotLedger(tmp_path / "drift_ledger.json")
+        agent = AgentCore(
+            allowed_tools=sample_allowed_tools,
+            authorized_assets=sample_authorized_assets,
+            objective="Drift recovery test",
+            decision_strategy="rule",
+            max_steps=10,
+            stop_on_criteria_met=False,
+            stop_on_finding="none",
+        )
+
+        call_count = [0]
+        drift_injected = [False]
+
+        def execute(action):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return {"open_ports": [80]}
+            # Inject hallucinated port once (before step 2)
+            if not drift_injected[0]:
+                agent.state.open_ports.append(9999)
+                drift_injected[0] = True
+            return {"open_ports": [443]}
+
+        state, evidence, reason = run_agent_loop(agent, execute, snapshot_ledger=l, session_id="SESS-drift")
+
+        # After recovery, state should be clean (no hallucinated ports)
+        assert 9999 not in state.open_ports, (
+            f"Hallucinated port 9999 still in state: {state.open_ports}"
+        )
+        # The loop should NOT have stopped via DRIFT_DETECTED
+        assert reason != StopReason.DRIFT_DETECTED, (
+            f"Loop stopped via drift despite recovery attempt: {reason}"
+        )
+        # Evidence should have entries (both before and after recovery)
+        assert len(evidence) >= 2, (
+            f"Expected evidence after recovery, got {len(evidence)}"
+        )
+
+    def test_loop_drift_no_snapshot_stops(self, sample_allowed_tools, sample_authorized_assets, tmp_path):
+        """Drift before any snapshot is written stops the loop cleanly."""
+        from gatekeeper_eos_v6.snapshot import SnapshotLedger
+
+        l = SnapshotLedger(tmp_path / "empty_ledger.json")
+        agent = AgentCore(
+            allowed_tools=sample_allowed_tools,
+            authorized_assets=sample_authorized_assets,
+            objective="Drift no restore test",
+            decision_strategy="rule",
+            max_steps=10,
+            stop_on_criteria_met=False,
+            stop_on_finding="none",
+        )
+
+        def execute(action):
+            # Inject hallucination on every call (before auto-snapshot can save)
+            agent.state.open_ports.append(9999)
+            return {"open_ports": [80]}
+
+        state, evidence, reason = run_agent_loop(agent, execute, snapshot_ledger=l, session_id="SESS-norestore")
+
+        # No valid snapshot to restore from -> loop stops via DRIFT_DETECTED
+        assert reason == StopReason.DRIFT_DETECTED, (
+            f"Expected DRIFT_DETECTED, got {reason}"
+        )
+        # No evidence was recorded (drift on step 1 before auto-snapshot)
+        # step_action records evidence BEFORE checking drift, so one entry
+        # is always present even when drift is detected on the first call.
+        assert len(evidence) >= 1
+        # Drift state still contains hallucinated port
+        assert 9999 in state.open_ports
+
+
+# ===========================================================================
+# LLMProvider
+# ===========================================================================
+
+
+class TestLLMProvider:
+    """Tests for LLMProvider base class and built-in implementations."""
+
+    def test_mock_provider_generates_json(self):
+        """MockLLMProvider.generate returns valid JSON with tool/command."""
+        provider = MockLLMProvider()
+        response = provider.generate("test prompt")
+        data = json.loads(response)
+        assert data["tool"] == "nmap"
+        assert data["command"] == "discover"
+        assert data["target"] == "target"
+
+    def test_mock_provider_tracks_calls(self):
+        """MockLLMProvider tracks call_count and last_prompt."""
+        provider = MockLLMProvider()
+        assert provider.call_count == 0
+
+        provider.generate("prompt 1")
+        assert provider.call_count == 1
+        assert "prompt 1" in provider.last_prompt
+
+        provider.generate("prompt 2")
+        assert provider.call_count == 2
+        assert "prompt 2" in provider.last_prompt
+
+    def test_mock_provider_custom_action(self):
+        """MockLLMProvider accepts a custom default action dict."""
+        custom = {
+            "tool": "reporter",
+            "command": "summary",
+            "arguments": {"findings": 5},
+            "target": "10.0.0.10",
+            "reasoning": "Custom mock response",
+        }
+        provider = MockLLMProvider(default_action=custom)
+        response = provider.generate("test")
+        data = json.loads(response)
+        assert data["tool"] == "reporter"
+        assert data["command"] == "summary"
+        assert data["arguments"]["findings"] == 5
+
+    def test_mock_provider_model_default(self):
+        """MockLLMProvider defaults model to 'mock'."""
+        provider = MockLLMProvider()
+        assert provider.model == "mock"
+
+        provider2 = MockLLMProvider(model="custom-model")
+        assert provider2.model == "custom-model"
+
+    def test_rule_fallback_provider_returns_empty(self):
+        """RuleFallbackLLMProvider returns empty string (signals rule fallback)."""
+        provider = RuleFallbackLLMProvider()
+        response = provider.generate("any prompt")
+        assert response == ""
+        assert provider.call_count == 1
+
+    def test_llm_response_parsing_in_selector(self, sample_allowed_tools, sample_authorized_assets):
+        """ActionSelector._select_with_llm parses MockLLMProvider's response."""
+        custom_action = {
+            "tool": "reporter",
+            "command": "summary",
+            "arguments": {},
+            "target": "10.0.0.10",
+            "reasoning": "LLM chose report phase",
+        }
+        provider = MockLLMProvider(default_action=custom_action)
+        selector = ActionSelector(
+            decision_strategy="llm",
+            llm_prompt="You are an agent. Tools: {{ allowed_tools }}",
+            llm_provider=provider,
+        )
+
+        state = WorldState(open_ports=[80], services=[{"name": "nginx"}])
+        action = selector.select_action(
+            state, sample_allowed_tools, sample_authorized_assets,
+            "Test LLM", step=1, previous_actions=[],
+        )
+
+        # Should use the LLM action, not rule fallback
+        assert action.tool == "reporter"
+        assert action.command == "summary"
+        assert provider.call_count == 1
+        # The prompt should have been substituted with context
+        assert "{{ allowed_tools }}" not in provider.last_prompt
+        assert "nmap" in provider.last_prompt or "Tools:" in provider.last_prompt
+
+    def test_llm_empty_response_falls_back_to_rules(self, sample_allowed_tools, sample_authorized_assets):
+        """Empty LLM response -> fall back to rule-based selection."""
+        provider = MockLLMProvider()
+        # Override to return empty (simulating no valid response)
+        provider._default_action = {}  # Will produce invalid JSON
+        # Actually MockLLMProvider always returns valid JSON
+        # Let me use a different approach: use RuleFallbackLLMProvider which returns ""
+        fallback_provider = RuleFallbackLLMProvider()
+
+        selector = ActionSelector(
+            decision_strategy="llm",
+            llm_prompt="Template: {{ allowed_tools }}",
+            llm_provider=fallback_provider,
+        )
+
+        state = WorldState()  # Empty -> recon phase
+        action = selector.select_action(
+            state, sample_allowed_tools, sample_authorized_assets,
+            "Test", step=1, previous_actions=[],
+        )
+
+        # Should fall back to rule-based (recon on first asset)
+        assert action.tool is not None
+        assert action.target == "10.0.0.10"
+        assert fallback_provider.call_count == 1
+
+    def test_llm_no_provider_falls_back(self, sample_allowed_tools, sample_authorized_assets):
+        """No LLM provider configured -> fall back to rules."""
+        selector = ActionSelector(
+            decision_strategy="llm",
+            llm_prompt="Template: {{ allowed_tools }}",
+            # No llm_provider
+        )
+
+        state = WorldState()
+        action = selector.select_action(
+            state, sample_allowed_tools, sample_authorized_assets,
+            "Test", step=1, previous_actions=[],
+        )
+
+        # Falls back to rules
+        assert action.target == "10.0.0.10"
+
+    def test_agent_core_wires_llm_provider_to_selector(self, sample_allowed_tools, sample_authorized_assets):
+        """AgentCore with llm_provider passes it to the ActionSelector."""
+        provider = MockLLMProvider()
+
+        agent = AgentCore(
+            allowed_tools=sample_allowed_tools,
+            authorized_assets=sample_authorized_assets,
+            objective="LLM provider test",
+            decision_strategy="llm",
+            llm_prompt="You are an agent. Tools: {{ allowed_tools }}",
+            llm_provider=provider,
+            max_steps=3,
+        )
+
+        action = agent.get_next_action()
+        # The selector should have used the provider
+        assert provider.call_count >= 1
+        assert action.tool is not None
+
+    def test_hybrid_with_llm_provider_uses_fallback(self, sample_allowed_tools, sample_authorized_assets):
+        """Hybrid strategy with LLM provider: on stall, calls provider for unstick."""
+        custom_action = {
+            "tool": "reporter",
+            "command": "summary",
+            "arguments": {},
+            "target": "10.0.0.10",
+            "reasoning": "LLM unstick",
+        }
+        provider = MockLLMProvider(default_action=custom_action)
+
+        selector = ActionSelector(
+            decision_strategy="hybrid",
+            llm_prompt="Rescue: {{ state }}",
+            llm_provider=provider,
+        )
+
+        # State that keeps selector in same phase
+        state = WorldState(open_ports=[80])
+
+        # Call 4+ times to trigger stall
+        stalled_action = None
+        for i in range(5):
+            action = selector.select_action(
+                state, sample_allowed_tools, sample_authorized_assets,
+                "Test", step=i + 1, previous_actions=[],
+            )
+            if i == 3:
+                stalled_action = action
+
+        # LLM should have been called at least once
+        assert provider.call_count >= 1
+        # The LLM returned a different action (reporter/summary != nmap/scan)
+        # So the stall should be reset, and the action should NOT have stall marker
+        assert stalled_action is not None
+        assert "RULE_ENGINE_STALLED" not in stalled_action.reasoning
+        assert stalled_action.tool == "reporter"
 
 
 # ===========================================================================

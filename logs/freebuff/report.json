@@ -1,0 +1,96 @@
+{
+  "pipeline": "ci",
+  "timestamp": "2026-05-27T21:40:59",
+  "duration_seconds": 0.94,
+  "exit_code": 0,
+  "systems": [
+    {
+      "name": "incident-classifier",
+      "status": "pass",
+      "output_snippet": "[Classification: network]"
+    },
+    {
+      "name": "code-audit-broadcast",
+      "status": "pass",
+      "output_snippet": "============================================================"
+    },
+    {
+      "name": "code-review-langgraph",
+      "status": "pass",
+      "output_snippet": "```"
+    },
+    {
+      "name": "legal-verdict-langgraph",
+      "status": "pass",
+      "output_snippet": "Judge: Judge"
+    },
+    {
+      "name": "security-threat-consensus",
+      "status": "pass",
+      "output_snippet": "Synthesizer: Synthesizer"
+    },
+    {
+      "name": "incident-classifier",
+      "status": "pass",
+      "output_snippet": "[Classification: network]"
+    },
+    {
+      "name": "code-audit-broadcast",
+      "status": "pass",
+      "output_snippet": "============================================================"
+    },
+    {
+      "name": "code-review-langgraph",
+      "status": "pass",
+      "output_snippet": "```"
+    },
+    {
+      "name": "legal-verdict-langgraph",
+      "status": "pass",
+      "output_snippet": "Judge: Judge"
+    },
+    {
+      "name": "security-threat-consensus",
+      "status": "pass",
+      "output_snippet": "Synthesizer: Synthesizer"
+    },
+    {
+      "name": "incident-classifier",
+      "status": "pass",
+      "output_snippet": "During task with name 'triage_router' and id 'b614a25e-811e-af41-ec2b-e0477d07eb03'"
+    },
+    {
+      "name": "code-audit-broadcast",
+      "status": "pass",
+      "output_snippet": "During task with name 'maintainability_auditor' and id '1596061e-7881-92ff-dd59-634c87d3a63f'"
+    },
+    {
+      "name": "code-review-langgraph",
+      "status": "pass",
+      "output_snippet": "During task with name 'reviewer' and id 'c74db64b-663d-c05d-3018-8f01f77a94b1'"
+    },
+    {
+      "name": "legal-verdict-langgraph",
+      "status": "pass",
+      "output_snippet": "During task with name 'defender' and id 'acacea71-3005-c8c0-81e3-ad5aeae3387a'"
+    },
+    {
+      "name": "security-threat-consensus",
+      "status": "pass",
+      "output_snippet": "During task with name 'network_analyst' and id '4fd7c2a1-e65e-660a-b51c-b01871bba71c'"
+    }
+  ],
+  "summary": {
+    "total": 15,
+    "passed": 15,
+    "failed": 0
+  },
+  "source_files": [
+    "/Users/krishanumala/Documents/Projects/gatekeeper-eos-v6/logs/summary.md",
+    "/Users/krishanumala/Documents/Projects/gatekeeper-eos-v6/logs/run_all_20260527_202330.log",
+    "/Users/krishanumala/Documents/Projects/gatekeeper-eos-v6/logs/run_20260527_203338.log"
+  ],
+  "bridge": null,
+  "generation_status": "pass",
+  "test_status": "pass"
+}

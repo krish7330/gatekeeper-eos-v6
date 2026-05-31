@@ -553,9 +553,11 @@ def context_revalidation(
         )
 
     # Step 4: Restore agent state
-    #   - working_memory → WorldState
+    #   - working_memory → WorldState (deep-copied to prevent mutation of
+    #     the SnapshotEntry's stored dict, which would break the hash chain
+    #     when step_action later appends to state lists)
     #   - tool_call_history → evidence_log + previous_actions
-    restored_state = WorldState.from_dict(entry.working_memory)
+    restored_state = WorldState.from_dict(copy.deepcopy(entry.working_memory))
     agent.state = restored_state
 
     # Restore evidence log and previous actions from tool call history

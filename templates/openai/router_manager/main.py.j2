@@ -36,7 +36,7 @@ Available specialists:
 
 async def main() -> None:
     """Run the router-manager workflow."""
-    user_input = os.environ.get("USER_INPUT", "{{ system.example_input }}")
+    user_input = os.environ.get("USER_INPUT", {{ system.example_input | default("") | tojson }})
     print(f"User: {user_input}\n")
 
     result = await Runner.run({{ system.agents[0].name }}_agent, user_input)

@@ -1,0 +1,111 @@
+[
+  {
+    "name": "Alance V1 – Error Workflow",
+    "nodes": [
+      {
+        "parameters": {},
+        "id": "e001",
+        "name": "Error Trigger",
+        "type": "n8n-nodes-base.errorTrigger",
+        "typeVersion": 1,
+        "position": [250, 300]
+      },
+      {
+        "parameters": {
+          "jsCode": "// ── Format Error Record ───────────────────────────────────\n// Error Trigger provides: $json.error, $json.workflow, $json.execution, $json.lastNodeExecuted\n\nconst err  = items[0].json.error || {};\nconst wf   = items[0].json.workflow || {};\nconst exec = items[0].json.execution || {};\n\nconst environment = $env.ENVIRONMENT || 'sandbox';\n\nreturn [{\n  json: {\n    error_message:   String(err.message || 'Unknown error').slice(0, 1000),\n    error_type:      err.name || 'Error',\n    workflow_id:     wf.id || 'unknown',\n    workflow_name:   wf.name || 'unknown',\n    execution_id:    exec.id || 'unknown',\n    last_node:       items[0].json.lastNodeExecuted || 'unknown',\n    severity:        'error',\n    environment:     environment,\n    timestamp:       new Date().toISOString(),\n    raw_preview:     JSON.stringify(items[0].json).slice(0, 1500)\n  }\n}];"
+        },
+        "id": "e002",
+        "name": "Format Error",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [450, 300]
+      },
+      {
+        "parameters": {
+          "chatId": "DUMMY_TELEGRAM_CHAT_ID",
+          "text": "=🚨 *Alance V1 Error*\\nWorkflow: {{ $json.workflow_name }}\\nNode: {{ $json.last_node }}\\nError: {{ $json.error_message.slice(0, 200) }}\\nSeverity: {{ $json.severity }}\\nEnvironment: {{ $json.environment }}",
+          "resource": "message",
+          "operation": "sendMessage",
+          "additionalFields": {
+            "parseMode": "markdown"
+          }
+        },
+        "id": "e003",
+        "name": "Telegram Alert",
+        "type": "n8n-nodes-base.telegram",
+        "typeVersion": 1,
+        "position": [650, 300],
+        "credentials": {
+          "telegramApi": "TelegramAlanceBot"
+        }
+      },
+      {
+        "parameters": {
+          "operation": "append",
+          "documentId": {
+            "__rl": true,
+            "mode": "id",
+            "value": "DUMMY_GOOGLE_SHEET_ID"
+          },
+          "sheetName": {
+            "__rl": true,
+            "mode": "list",
+            "value": "ERRORS"
+          },
+          "columns": {
+            "mappingMode": "defineBelow",
+            "value": {
+              "error_message": "={{ $json.error_message }}",
+              "error_type": "={{ $json.error_type }}",
+              "workflow_id": "={{ $json.workflow_id }}",
+              "workflow_name": "={{ $json.workflow_name }}",
+              "execution_id": "={{ $json.execution_id }}",
+              "last_node": "={{ $json.last_node }}",
+              "severity": "={{ $json.severity }}",
+              "environment": "={{ $json.environment }}",
+              "timestamp": "={{ $json.timestamp }}"
+            }
+          },
+          "options": {}
+        },
+        "id": "e004",
+        "name": "Log to ERRORS Sheet",
+        "type": "n8n-nodes-base.googleSheets",
+        "typeVersion": 4,
+        "position": [850, 300],
+        "credentials": {
+          "googleSheetsOAuth2Api": "GoogleSheetsAlance"
+        }
+      },
+      {
+        "parameters": {
+          "content": "## Alance V1 Error Workflow\n\nSet as the Error Workflow for the main production workflow.\n\n**Credentials:** `TelegramAlanceBot`, `GoogleSheetsAlance`\n**Placeholders:** `DUMMY_TELEGRAM_CHAT_ID`, `DUMMY_GOOGLE_SHEET_ID`"
+        },
+        "id": "e999",
+        "name": "README",
+        "type": "n8n-nodes-base.stickyNote",
+        "typeVersion": 1,
+        "position": [50, 100]
+      }
+    ],
+    "connections": {
+      "Error Trigger": {
+        "main": [[{ "node": "Format Error", "type": "main", "index": 0 }]]
+      },
+      "Format Error": {
+        "main": [[{ "node": "Telegram Alert", "type": "main", "index": 0 }]]
+      },
+      "Telegram Alert": {
+        "main": [[{ "node": "Log to ERRORS Sheet", "type": "main", "index": 0 }]]
+      }
+    },
+    "settings": {
+      "timezone": "UTC",
+      "saveManualExecutions": true,
+      "saveExecutionProgress": true
+    },
+    "staticData": null,
+    "tags": [],
+    "versionId": "v1-alance-error-0001"
+  }
+]

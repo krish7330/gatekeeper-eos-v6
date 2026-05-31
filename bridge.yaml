@@ -1,0 +1,31 @@
+# bridge.yaml — Configuration for the Perplexity ↔ freebuff bridge
+#
+# Environment variable overrides (take precedence over this file):
+#   PERPLEXITY_API_KEY      (required)
+#   PERPLEXITY_MODEL
+#   PERPLEXITY_MAX_TOKENS
+
+# Model to use. Options: sonar-pro, sonar, sonar-deep-research
+model: sonar-pro
+
+# Max tokens in the response
+max_tokens: 4096
+
+# Sampling temperature (0.0 = deterministic, 1.0 = creative)
+temperature: 0.3
+
+# HTTP request timeout in seconds
+timeout: 60
+
+# ── Watch mode ──────────────────────────────────────────────────────────────
+
+# Seconds between polls when running `bridge watch`
+watch_interval: 10
+
+# Whether to auto-analyze new log files as they appear
+auto_analyze: false
+
+# Custom analysis prompt — the bridge appends the content to this goal
+analysis_goal: >
+  Identify key findings, patterns, and actionable insights.
+  Highlight any errors, warnings, or areas for improvement.

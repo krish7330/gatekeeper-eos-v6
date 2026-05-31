@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+from contextlib import redirect_stdout, redirect_stderr
+from datetime import datetime
 from pathlib import Path
 
 import yaml
@@ -29,9 +31,27 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 HERE = Path(__file__).resolve().parent.parent.parent
 TEMPLATES_DIR = HERE / "templates"
 GENERATED_DIR = HERE / "generated"
+LOG_DIR = HERE / "logs"
 
 SUPPORTED_TARGETS = {"openai", "langgraph"}
-SUPPORTED_PATTERNS = {"handoffs", "agents_as_tools", "router_manager", "supervisor_workers", "chain", "broadcast", "reflection", "debate", "consensus", "planner_executor"}
+SUPPORTED_PATTERNS = {"handoffs", "agents_as_tools", "router_manager", "supervisor_workers", "chain", "broadcast", "reflection", "debate", "consensus", "planner_executor", "multi_session"}
+
+
+# ---------------------------------------------------------------------------
+# Logging helper — tee output to both terminal and a file
+# ---------------------------------------------------------------------------
+class Tee:
+    """Duplicate writes to two file-like objects (e.g. terminal + log file)."""
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data: str) -> None:
+        for s in self.streams:
+            s.write(data)
+
+    def flush(self) -> None:
+        for s in self.streams:
+            s.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +331,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="NAME",
         help="Only process the system with this name",
     )
+    parser.add_argument(
+        "--log",
+        action="store_true",
+        help="Save full output to a timestamped log file in logs/",
+    )
     return parser.parse_args(argv)
 
 
@@ -349,32 +374,61 @@ def main(argv: list[str] | None = None) -> int:
         lstrip_blocks=True,
     )
 
-    # Preview or generate
-    output_dir = Path(args.output)
-    if args.preview:
-        label = "Previewing" if not args.verbose else "Verbose previewing"
-        print(f"{label} {len(spec['systems'])} system(s) in {output_dir}/ …")
-        preview_all(spec, output_dir, env=env, verbose=args.verbose)
-        print(f"\n(No files written — use without --preview to generate)")
+    # Optional: tee all output to a timestamped log file
+    log_path = None
+    log_file = None
+    if args.log:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_path = LOG_DIR / f"generate_{stamp}.log"
+        log_file = open(log_path, "w")
+
+    # Wrap generation in a redirect context manager if logging
+    cm = redirect_stdout(Tee(sys.stdout, log_file)) if log_file else None
+    cm_err = redirect_stderr(Tee(sys.stderr, log_file)) if log_file else None
+
+    if cm:
+        cm.__enter__()
+    if cm_err:
+        cm_err.__enter__()
+
+    try:
+        # Preview or generate
+        output_dir = Path(args.output)
+        if args.preview:
+            label = "Previewing" if not args.verbose else "Verbose previewing"
+            print(f"{label} {len(spec['systems'])} system(s) in {output_dir}/ …")
+            preview_all(spec, output_dir, env=env, verbose=args.verbose)
+            print(f"\n(No files written — use without --preview to generate)")
+            return 0
+
+        if args.filter:
+            spec["systems"] = [s for s in spec["systems"] if s.get("name") == args.filter]
+            if not spec["systems"]:
+                print(f"Error: no system named {args.filter!r} in spec", file=sys.stderr)
+                return 1
+
+        if args.dry_run:
+            print(f"Generating {len(spec['systems'])} system(s) to stdout …")
+            results = generate_all(spec, env, dry_run=True)
+            print(f"\nDone — {len(results)} system(s) previewed (no files written)")
+            return 0
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Generating {len(spec['systems'])} system(s) …")
+        results = generate_all(spec, env)
+        print(f"\nDone — {len(results)} system(s) generated in {output_dir}/")
         return 0
-
-    if args.filter:
-        spec["systems"] = [s for s in spec["systems"] if s.get("name") == args.filter]
-        if not spec["systems"]:
-            print(f"Error: no system named {args.filter!r} in spec", file=__import__("sys").stderr)
-            return 1
-
-    if args.dry_run:
-        print(f"Generating {len(spec['systems'])} system(s) to stdout …")
-        results = generate_all(spec, env, dry_run=True)
-        print(f"\nDone — {len(results)} system(s) previewed (no files written)")
-        return 0
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Generating {len(spec['systems'])} system(s) …")
-    results = generate_all(spec, env)
-    print(f"\nDone — {len(results)} system(s) generated in {output_dir}/")
-    return 0
+    finally:
+        # Exit redirect context managers
+        if cm:
+            cm.__exit__(None, None, None)
+        if cm_err:
+            cm_err.__exit__(None, None, None)
+        if log_path:
+            print(f"\n📝 Log saved: {log_path}")
+        if log_file:
+            log_file.close()
 
 
 if __name__ == "__main__":

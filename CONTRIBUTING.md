@@ -75,25 +75,44 @@ factory specs/batch.yaml --list-patterns
 gatekeeper-eos-v6/
 ├── src/
 │   └── gatekeeper_eos_v6/
-│       ├── __init__.py         # Package init
-│       ├── __main__.py         # python -m gatekeeper_eos_v6 entry point
-│       └── factory.py          # CLI + spec parsing + code generation
+│       ├── __init__.py          # Package init
+│       ├── __main__.py          # python -m gatekeeper_eos_v6 entry point
+│       ├── factory.py           # CLI + spec parsing + code generation (factory patterns)
+│       ├── agentic.py           # Bounded autonomous loop — AgentCore, PolicyGate, Drift Sentinel, Hybrid Strategy
+│       ├── snapshot.py          # Append-only hash-chained ledger — context revalidation recovery
+│       ├── campaign.py          # Multi-session orchestration — scheduling, deps, drift rules
+│       ├── checkpoint.py        # Checkpoint read/write/rollback
+│       ├── locks.py             # Lock manager (mutex, semaphore, RW lock)
+│       └── perplexity_client.py # External API client
+├── schemas/
+│   ├── snapshot.schema.json     # SnapshotEntry data contract (hash chain, world state)
+│   └── agentic-plan.schema.json # Agentic config and campaign plan schema
 ├── specs/
-│   └── batch.yaml              # Batch spec defining all example systems
-├── templates/                  # Jinja2 templates — one folder per (target, pattern)
-│   ├── openai/                 # OpenAI Agents SDK target
+│   ├── batch.yaml               # Batch spec defining all example systems
+│   └── *.yaml                   # Individual YAML system specs
+├── templates/                   # Jinja2 templates — one folder per (target, pattern)
+│   ├── openai/                  # OpenAI Agents SDK target
 │   │   ├── handoffs/
 │   │   │   ├── main.py.j2
 │   │   │   └── requirements.txt.j2
-│   │   └── ...                 # 9 more patterns
-│   └── langgraph/              # LangGraph target
-│       └── ...                 # Mirror of the same patterns
-├── generated/                  # Output directory (gitignored)
+│   │   └── ...                  # 9 more patterns
+│   └── langgraph/               # LangGraph target
+│       └── ...                  # Mirror of the same patterns
+├── generated/                   # Output directory (gitignored)
+├── n8n/                         # n8n workflow exports (Alance V1, Hardened Pair)
 ├── tests/
-│   ├── test_spec_parsing.py    # Spec validation tests
-│   └── test_generation.py      # Template rendering + file output tests
+│   ├── test_spec_parsing.py     # Spec validation tests
+│   ├── test_generation.py       # Template rendering + file output tests
+│   ├── test_agentic.py          # AgentCore, PolicyGate, ActionSelector, hybrid stall tests
+│   ├── test_e2e_yaml.py         # End-to-end YAML config → AgentCore → stop condition tests
+│   ├── test_snapshot.py         # Snapshot ledger integrity, take_snapshot, context_revalidation
+│   └── test_campaign.py         # Campaign YAML validation, dependency resolution, executor
+├── scripts/
+│   └── run_and_analyze.py      # Agent run + analysis harness
 ├── README.md
 ├── CONTRIBUTING.md
+├── AGENTS.md                    # Agent pattern reference — factory + runtime subsystems
+├── TECHNICAL_DESIGN.md          # Alance V1 n8n architecture
 └── pyproject.toml
 ```
 
@@ -101,11 +120,19 @@ gatekeeper-eos-v6/
 
 | File | Purpose |
 |------|---------|
-| `src/gatekeeper_eos_v6/factory.py` | CLI entry point — parses args, loads YAML, validates, renders Jinja2 templates, writes output. All orchestration logic lives here. |
-| `templates/{target}/{pattern}/main.py.j2` | Jinja2 template for the system's `main.py`. Receives the `system` dict as template context. |
+| `src/gatekeeper_eos_v6/factory.py` | CLI entry point — parses args, loads YAML, validates, renders Jinja2 templates, writes output. |
+| `src/gatekeeper_eos_v6/agentic.py` | Bounded autonomous loop — `AgentCore`, `PolicyGate`, `Drift Sentinel`, `ActionSelector` (rule/llm/hybrid). |
+| `src/gatekeeper_eos_v6/snapshot.py` | Append-only hash-chained ledger — `SnapshotLedger`, `take_snapshot()`, `context_revalidation()`. |
+| `src/gatekeeper_eos_v6/campaign.py` | Multi-session orchestration — `CampaignExecutor`, `DependencyResolver`, drift rule enforcement. |
+| `templates/{target}/{pattern}/main.py.j2` | Jinja2 template for generated system's `main.py`. |
 | `templates/{target}/{pattern}/requirements.txt.j2` | Jinja2 template for `requirements.txt`. |
-| `specs/batch.yaml` | The source of truth for all example systems. Every pattern should have at least one entry here. |
-| `tests/test_generation.py` | Parameterized tests that render every target/pattern combination and verify file output, syntax, and content. |
+| `specs/batch.yaml` | All example systems for the factory. |
+| `schemas/snapshot.schema.json` | SnapshotEntry JSON Schema with hash chain, world state, evidence, agent action. |
+| `schemas/agentic-plan.schema.json` | Agentic config schema — decision strategy, stop conditions, rule engine config. |
+| `tests/test_generation.py` | Parameterized tests for factory template rendering. |
+| `tests/test_agentic.py` | 620+ tests for agentic loop, hybrid stall detection, drift sentinel, PolicyGate CIDR. |
+| `tests/test_e2e_yaml.py` | 37 E2E tests loading YAML config → AgentCore → stop condition → snapshot → drift recovery. |
+| `tests/test_snapshot.py` | 52 tests for SnapshotLedger integrity, take_snapshot, context_revalidation. |
 
 ---
 
@@ -356,34 +383,47 @@ python -m pytest tests/ -v -k "reflection"
 
 ### Test Architecture
 
-- **`test_spec_parsing.py`** — Tests for `load_spec()` and `validate_spec()`. Validates that:
-  - A well-formed spec produces no errors
-  - Missing fields produce appropriate errors
-  - Invalid targets/patterns are rejected
-  - All valid target/pattern combinations pass validation
+#### Factory Tests
+- **`test_spec_parsing.py`** — Tests for `load_spec()` and `validate_spec()`. Validates well-formed specs, missing fields, invalid targets/patterns.
+- **`test_generation.py`** — Tests for `generate_system()` and `generate_all()`. Validates all output files, syntax, content, preview mode.
 
-- **`test_generation.py`** — Tests for `generate_system()` and `generate_all()`. Validates that:
-  - All 5 output files are created for every target/pattern combination
-  - Generated `main.py` references all agent names
-  - Generated files have non-zero content
-  - `--preview` mode prints a file tree without writing files
-  - `--preview --verbose` shows line counts and byte sizes
+#### Agentic Runtime Tests
+- **`test_agentic.py`** (620+ tests) — Covers:
+  - `AgentCore`: world model update, evidence logging, drift detection
+  - `PolicyGate`: tool/command/target validation, CIDR matching, wildcard hostnames
+  - `ActionSelector`: rule-based action selection, LLM mode, hybrid strategy
+  - **Hybrid stall detection**: `_check_tool_loop`, `_check_asset_exhaustion` (FP-gated), `_check_state_stagnation`
+  - `RULE_ENGINE_STALLED`: LLM fallback with same/different action, no-LLM fallback, agent loop halting
+  - `run_agent_loop`: full loop with PolicyGate, stop conditions, drift sentinel
+- **`test_e2e_yaml.py`** (37 tests) — End-to-end YAML config → `AgentCore` → stop conditions → snapshots → drift recovery. Covers multi-asset discovery without false stall.
+- **`test_snapshot.py`** (52 tests) — `SnapshotLedger`: append, verify integrity, verify_entry_integrity, reload. `take_snapshot()` with full agent state. `context_revalidation()` with failure modes (no snapshot, broken hash chain, drift after restore). Schema validation against `snapshot.schema.json`.
+- **`test_campaign.py`** — Campaign YAML validation, dependency resolution, drift rule enforcement, `CampaignExecutor`.
 
-### What to Test When Adding a Pattern
+### What to Test When Adding a Factory Pattern
 
 The parameterized tests in `test_generation.py` automatically cover new patterns if they're added to `SUPPORTED_PATTERNS`. You don't need to write new test functions — just ensure:
 
 1. The pattern name is added to `SUPPORTED_PATTERNS`
 2. Templates exist for at least one target
-3. A spec entry exists in `specs/batch.yaml` (or you test with `make_system()`)
+3. A spec entry exists in `specs/batch.yaml`
 4. `pytest tests/` passes
 
-### What to Test When Adding a Target
+### What to Test When Adding to the Agentic Runtime
 
-Similarly, tests parameterize over `SUPPORTED_TARGETS`. Ensure:
+When adding features to `agentic.py`, `snapshot.py`, or `campaign.py`:
+
+1. Write tests in the appropriate `tests/test_*.py` file
+2. Run specific test file first: `python -m pytest tests/test_agentic.py -v`
+3. Run E2E tests: `python -m pytest tests/test_e2e_yaml.py -v`
+4. Run full suite before commit: `python -m pytest tests/ -q`
+5. Verify no regression: compare against the known baseline of 733+ tests passing
+
+### What to Test When Adding a New Target
+
+Tests parameterize over `SUPPORTED_TARGETS`. Ensure:
 
 1. The target is added to `SUPPORTED_TARGETS`
-2. Templates exist for all 10 patterns under `templates/<new_target>/`
+2. Templates exist for all 11 patterns under `templates/<new_target>/`
 3. Spec entries exist for the new target in `specs/batch.yaml`
 4. `pytest tests/` passes
 

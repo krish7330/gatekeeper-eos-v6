@@ -30,7 +30,7 @@ AGENTS = [
 
 async def main() -> None:
     """Run the chain pipeline — each agent passes its output to the next."""
-    user_input = os.environ.get("USER_INPUT", "{{ system.example_input }}")
+    user_input = os.environ.get("USER_INPUT", {{ system.example_input | default("") | tojson }})
     print(f"User: {user_input}\n")
 
     # Linear chain: agent 1 → agent 2 → ... → agent N

@@ -34,7 +34,7 @@ from agents import Agent, Runner
 
 async def main() -> None:
     """Run the debate: all debaters argue in parallel, then judge decides."""
-    user_input = os.environ.get("USER_INPUT", "{{ system.example_input }}")
+    user_input = os.environ.get("USER_INPUT", {{ system.example_input | default("") | tojson }})
     print(f"User: {user_input}\n")
 
     # ---- Phase 1: All debaters present their positions ----
