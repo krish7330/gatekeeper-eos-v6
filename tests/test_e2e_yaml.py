@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import time
+import unittest.mock
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,6 +32,7 @@ from gatekeeper_eos_v6.agentic import (
     MockLLMProvider,
     run_agent_loop,
 )
+from gatekeeper_eos_v6.providers import OpenAIProvider, AnthropicProvider, create_llm_provider
 from gatekeeper_eos_v6.campaign import (
     load_campaign,
     CampaignValidationError,
@@ -1640,3 +1642,673 @@ class TestE2ELLMIntegration:
             assert violations == [], f"Policy violation in LLM action: {violations}"
         # Agent completed without errors
         assert reason is not None
+
+
+# ===========================================================================
+# 13. OpenAIProvider — E2E
+# ===========================================================================
+
+
+class TestE2EOpenAIProvider:
+    """Prove the OpenAIProvider works end-to-end through run_agent_loop.
+
+    All tests mock the internal OpenAI client so no real API calls are made.
+    """
+
+    def test_openai_provider_in_llm_strategy(self, monkeypatch):
+        """OpenAIProvider with LLM strategy: provider generates actions,
+        agent loop executes them, evidence reflects the LLM's choices."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-e2e-key")
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+
+            # Mock a valid API response returning nmap/discover
+            mock_choice = unittest.mock.MagicMock()
+            mock_choice.message.content = json.dumps({
+                "tool": "nmap",
+                "command": "discover",
+                "arguments": {"target": "10.0.0.10", "ports": "top-1000"},
+                "target": "10.0.0.10",
+                "reasoning": "E2E: begin reconnaissance",
+            })
+            mock_response = unittest.mock.MagicMock()
+            mock_response.choices = [mock_choice]
+            mock_client.chat.completions.create.return_value = mock_response
+
+            provider = OpenAIProvider()
+
+            agent = AgentCore(
+                allowed_tools=[
+                    {"name": "nmap", "allowed_commands": ["discover", "scan"]},
+                    {"name": "reporter", "allowed_commands": ["summary"]},
+                ],
+                authorized_assets=["10.0.0.10"],
+                objective="OpenAI E2E test",
+                decision_strategy="llm",
+                llm_prompt="Analyze this target: {{ state }}",
+                llm_provider=provider,
+                max_steps=2,
+                stop_on_criteria_met=False,
+                stop_on_finding="none",
+            )
+
+            def execute(action):
+                return {"open_ports": [80]}
+
+            final_state, evidence, reason = run_agent_loop(agent, execute)
+
+            # Provider should have been called
+            assert provider.call_count >= 1
+            # The prompt should be substituted
+            assert "{{ state }}" not in provider.last_prompt
+            # Evidence should reflect the LLM's action
+            assert len(evidence) >= 1
+            if evidence:
+                assert evidence[0].action.tool == "nmap"
+                assert evidence[0].action.command == "discover"
+            # The API should have been called with correct params
+            mock_client.chat.completions.create.assert_called()
+            call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+            assert call_kwargs["model"] == "gpt-4o-mini"
+            assert len(call_kwargs["messages"]) == 2
+
+    def test_openai_provider_in_hybrid_strategy(self, monkeypatch):
+        """OpenAIProvider in hybrid strategy: on stall, provider is called
+        to unstick. The provider returns a different action, which resets
+        the stall and allows the loop to continue."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-hybrid-key")
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+
+            # Provider returns reporter/summary (different from rules' nmap/scan)
+            mock_choice = unittest.mock.MagicMock()
+            mock_choice.message.content = json.dumps({
+                "tool": "reporter",
+                "command": "summary",
+                "arguments": {},
+                "target": "10.0.0.10",
+                "reasoning": "Unstick: switching to report",
+            })
+            mock_response = unittest.mock.MagicMock()
+            mock_response.choices = [mock_choice]
+            mock_client.chat.completions.create.return_value = mock_response
+
+            provider = OpenAIProvider()
+
+            tools = [
+                {"name": "nmap", "allowed_commands": ["discover", "scan"]},
+                {"name": "reporter", "allowed_commands": ["summary"]},
+            ]
+            assets = ["10.0.0.10"]
+
+            agent = AgentCore(
+                allowed_tools=tools,
+                authorized_assets=assets,
+                objective="OpenAI hybrid unstick",
+                decision_strategy="hybrid",
+                llm_prompt="Rescue: {{ state }}",
+                llm_provider=provider,
+                max_steps=15,
+                stop_on_criteria_met=False,
+                stop_on_finding="none",
+            )
+
+            def execute(action):
+                # Never return progress — keeps rules in fingerprint (nmap/scan)
+                return {"last_action_result": "scanning..."}
+
+            final_state, evidence, reason = run_agent_loop(agent, execute)
+
+            # Provider should have been called to unstick
+            assert provider.call_count >= 1
+            # Should NOT have stopped via RULE_ENGINE_STALLED
+            assert reason != StopReason.RULE_ENGINE_STALLED, (
+                f"Stalled despite OpenAI fallback. Reason: {reason}"
+            )
+
+    def test_openai_provider_api_error_falls_back(self, monkeypatch):
+        """OpenAIProvider API error -> falls back to rule-based selection.
+        The agent loop should continue without crashing."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fallback")
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+            # API raises an error
+            mock_client.chat.completions.create.side_effect = Exception("API under maintenance")
+
+            provider = OpenAIProvider()
+
+            agent = AgentCore(
+                allowed_tools=[
+                    {"name": "nmap", "allowed_commands": ["discover"]},
+                ],
+                authorized_assets=["10.0.0.10"],
+                objective="API error fallback test",
+                decision_strategy="llm",
+                llm_prompt="Prompt: {{ allowed_tools }}",
+                llm_provider=provider,
+                max_steps=2,
+                stop_on_criteria_met=False,
+                stop_on_finding="none",
+            )
+
+            def execute(action):
+                return {"open_ports": [80]}
+
+            final_state, evidence, reason = run_agent_loop(agent, execute)
+
+            # Provider should have been called (and failed)
+            assert provider.call_count >= 1
+            # Agent should have fallen back to rules and completed
+            assert len(evidence) >= 1
+            # Evidence should show rule-based actions (nmap/discover from recon phase)
+            if evidence:
+                assert evidence[0].action.tool is not None
+            assert reason is not None
+
+    def test_create_llm_provider_factory_e2e(self, monkeypatch):
+        """create_llm_provider factory creates an OpenAIProvider that works
+        in the agent loop."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-factory")
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+
+            mock_choice = unittest.mock.MagicMock()
+            mock_choice.message.content = json.dumps({
+                "tool": "nmap",
+                "command": "discover",
+                "arguments": {"target": "10.0.0.10"},
+                "target": "10.0.0.10",
+                "reasoning": "Factory E2E",
+            })
+            mock_response = unittest.mock.MagicMock()
+            mock_response.choices = [mock_choice]
+            mock_client.chat.completions.create.return_value = mock_response
+
+            # Create via factory
+            provider = create_llm_provider("openai", model="gpt-4o")
+            assert isinstance(provider, OpenAIProvider)
+            assert provider.model == "gpt-4o"
+
+            agent = AgentCore(
+                allowed_tools=[{"name": "nmap", "allowed_commands": ["discover"]}],
+                authorized_assets=["10.0.0.10"],
+                objective="Factory E2E",
+                decision_strategy="llm",
+                llm_prompt="Factory test: {{ state }}",
+                llm_provider=provider,
+                max_steps=1,
+                stop_on_criteria_met=False,
+                stop_on_finding="none",
+            )
+
+            def execute(action):
+                return {"open_ports": [80]}
+
+            final_state, evidence, reason = run_agent_loop(agent, execute)
+
+            assert provider.call_count >= 1
+            assert len(evidence) >= 1
+            # Model should have been passed to API
+            call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+            assert call_kwargs["model"] == "gpt-4o"
+
+
+# ===========================================================================
+# 13b. AnthropicProvider — E2E
+# ===========================================================================
+
+
+class TestE2EAnthropicProvider:
+    """Prove the AnthropicProvider works end-to-end through run_agent_loop.
+
+    All tests mock the internal Anthropic client so no real API calls are made.
+    """
+
+    def test_anthropic_provider_in_llm_strategy(self, monkeypatch):
+        """AnthropicProvider with LLM strategy: provider generates actions,
+        agent loop executes them, evidence reflects the LLM's choices."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-e2e-key")
+
+        with unittest.mock.patch("anthropic.Anthropic") as mock_anthropic:
+            mock_client = unittest.mock.MagicMock()
+            mock_anthropic.return_value = mock_client
+
+            # Mock a valid API response returning nmap/discover
+            mock_content_block = unittest.mock.MagicMock()
+            mock_content_block.text = json.dumps({
+                "tool": "nmap",
+                "command": "discover",
+                "arguments": {"target": "10.0.0.10", "ports": "top-1000"},
+                "target": "10.0.0.10",
+                "reasoning": "E2E: begin reconnaissance",
+            })
+            mock_response = unittest.mock.MagicMock()
+            mock_response.content = [mock_content_block]
+            mock_client.messages.create.return_value = mock_response
+
+            provider = AnthropicProvider()
+
+            agent = AgentCore(
+                allowed_tools=[
+                    {"name": "nmap", "allowed_commands": ["discover", "scan"]},
+                    {"name": "reporter", "allowed_commands": ["summary"]},
+                ],
+                authorized_assets=["10.0.0.10"],
+                objective="Anthropic E2E test",
+                decision_strategy="llm",
+                llm_prompt="Analyze this target: {{ state }}",
+                llm_provider=provider,
+                max_steps=2,
+                stop_on_criteria_met=False,
+                stop_on_finding="none",
+            )
+
+            def execute(action):
+                return {"open_ports": [80]}
+
+            final_state, evidence, reason = run_agent_loop(agent, execute)
+
+            # Provider should have been called
+            assert provider.call_count >= 1
+            # The prompt should be substituted
+            assert "{{ state }}" not in provider.last_prompt
+            # Evidence should reflect the LLM's action
+            assert len(evidence) >= 1
+            if evidence:
+                assert evidence[0].action.tool == "nmap"
+                assert evidence[0].action.command == "discover"
+            # The API should have been called with correct params
+            mock_client.messages.create.assert_called()
+            call_kwargs = mock_client.messages.create.call_args.kwargs
+            assert call_kwargs["model"] == "claude-sonnet-4-20250514"
+            assert len(call_kwargs["messages"]) == 1
+            # System prompt should be passed via the dedicated system parameter
+            assert call_kwargs["system"] is not None
+            assert "penetration-testing AI" in call_kwargs["system"]
+
+    def test_anthropic_provider_in_hybrid_strategy(self, monkeypatch):
+        """AnthropicProvider in hybrid strategy: on stall, provider is called
+        to unstick. The provider returns a different action, which resets
+        the stall and allows the loop to continue."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-hybrid-key")
+
+        with unittest.mock.patch("anthropic.Anthropic") as mock_anthropic:
+            mock_client = unittest.mock.MagicMock()
+            mock_anthropic.return_value = mock_client
+
+            # Provider returns reporter/summary (different from rules' nmap/scan)
+            mock_content_block = unittest.mock.MagicMock()
+            mock_content_block.text = json.dumps({
+                "tool": "reporter",
+                "command": "summary",
+                "arguments": {},
+                "target": "10.0.0.10",
+                "reasoning": "Unstick: switching to report",
+            })
+            mock_response = unittest.mock.MagicMock()
+            mock_response.content = [mock_content_block]
+            mock_client.messages.create.return_value = mock_response
+
+            provider = AnthropicProvider()
+
+            tools = [
+                {"name": "nmap", "allowed_commands": ["discover", "scan"]},
+                {"name": "reporter", "allowed_commands": ["summary"]},
+            ]
+            assets = ["10.0.0.10"]
+
+            agent = AgentCore(
+                allowed_tools=tools,
+                authorized_assets=assets,
+                objective="Anthropic hybrid unstick",
+                decision_strategy="hybrid",
+                llm_prompt="Rescue: {{ state }}",
+                llm_provider=provider,
+                max_steps=15,
+                stop_on_criteria_met=False,
+                stop_on_finding="none",
+            )
+
+            def execute(action):
+                # Never return progress — keeps rules in fingerprint (nmap/scan)
+                return {"last_action_result": "scanning..."}
+
+            final_state, evidence, reason = run_agent_loop(agent, execute)
+
+            # Provider should have been called to unstick
+            assert provider.call_count >= 1
+            # Should NOT have stopped via RULE_ENGINE_STALLED
+            assert reason != StopReason.RULE_ENGINE_STALLED, (
+                f"Stalled despite Anthropic fallback. Reason: {reason}"
+            )
+
+    def test_anthropic_provider_api_error_falls_back(self, monkeypatch):
+        """AnthropicProvider API error -> falls back to rule-based selection.
+        The agent loop should continue without crashing."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-fallback")
+
+        with unittest.mock.patch("anthropic.Anthropic") as mock_anthropic:
+            mock_client = unittest.mock.MagicMock()
+            mock_anthropic.return_value = mock_client
+            # API raises an error
+            mock_client.messages.create.side_effect = Exception("API under maintenance")
+
+            provider = AnthropicProvider()
+
+            agent = AgentCore(
+                allowed_tools=[
+                    {"name": "nmap", "allowed_commands": ["discover"]},
+                ],
+                authorized_assets=["10.0.0.10"],
+                objective="API error fallback test",
+                decision_strategy="llm",
+                llm_prompt="Prompt: {{ allowed_tools }}",
+                llm_provider=provider,
+                max_steps=2,
+                stop_on_criteria_met=False,
+                stop_on_finding="none",
+            )
+
+            def execute(action):
+                return {"open_ports": [80]}
+
+            final_state, evidence, reason = run_agent_loop(agent, execute)
+
+            # Provider should have been called (and failed)
+            assert provider.call_count >= 1
+            # Agent should have fallen back to rules and completed
+            assert len(evidence) >= 1
+            # Evidence should show rule-based actions
+            if evidence:
+                assert evidence[0].action.tool is not None
+            assert reason is not None
+
+    def test_create_llm_provider_factory_anthropic_e2e(self, monkeypatch):
+        """create_llm_provider factory creates an AnthropicProvider that works
+        in the agent loop."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-factory")
+
+        with unittest.mock.patch("anthropic.Anthropic") as mock_anthropic:
+            mock_client = unittest.mock.MagicMock()
+            mock_anthropic.return_value = mock_client
+
+            mock_content_block = unittest.mock.MagicMock()
+            mock_content_block.text = json.dumps({
+                "tool": "nmap",
+                "command": "discover",
+                "arguments": {"target": "10.0.0.10"},
+                "target": "10.0.0.10",
+                "reasoning": "Factory E2E",
+            })
+            mock_response = unittest.mock.MagicMock()
+            mock_response.content = [mock_content_block]
+            mock_client.messages.create.return_value = mock_response
+
+            # Create via factory
+            provider = create_llm_provider("anthropic", model="claude-3-haiku-20240307")
+            assert isinstance(provider, AnthropicProvider)
+            assert provider.model == "claude-3-haiku-20240307"
+
+            agent = AgentCore(
+                allowed_tools=[{"name": "nmap", "allowed_commands": ["discover"]}],
+                authorized_assets=["10.0.0.10"],
+                objective="Factory E2E",
+                decision_strategy="llm",
+                llm_prompt="Factory test: {{ state }}",
+                llm_provider=provider,
+                max_steps=1,
+                stop_on_criteria_met=False,
+                stop_on_finding="none",
+            )
+
+            def execute(action):
+                return {"open_ports": [80]}
+
+            final_state, evidence, reason = run_agent_loop(agent, execute)
+
+            assert provider.call_count >= 1
+            assert len(evidence) >= 1
+            # Model should have been passed to API
+            call_kwargs = mock_client.messages.create.call_args.kwargs
+            assert call_kwargs["model"] == "claude-3-haiku-20240307"
+
+
+# ===========================================================================
+# 14. YAML spec validation — LLM provider config
+# ===========================================================================
+
+
+class TestE2EYamlLLMProviderConfig:
+    """Prove the pentest-llm-orchestrator.yaml spec loads correctly and
+    from_agentic_config creates agents with the correct LLM provider."""
+
+    LLM_CAMPAIGN_PATH = Path(__file__).resolve().parent.parent / "specs" / "pentest-llm-orchestrator.yaml"
+    AGENTIC_CAMPAIGN_PATH = Path(__file__).resolve().parent.parent / "specs" / "pentest-agentic-orchestrator.yaml"
+
+    # ------------------------------------------------------------------
+    # Fixtures
+    # ------------------------------------------------------------------
+
+    @pytest.fixture(scope="class")
+    def llm_campaign(self):
+        """Load the LLM provider campaign YAML once per class."""
+        assert self.LLM_CAMPAIGN_PATH.exists(), f"Missing: {self.LLM_CAMPAIGN_PATH}"
+        return load_campaign(self.LLM_CAMPAIGN_PATH)
+
+    @pytest.fixture(scope="class")
+    def llm_recon_plan(self, llm_campaign):
+        """Return the inline plan dict for SESS-llm-recon."""
+        for s in llm_campaign.sessions:
+            if s.session_id == "SESS-llm-recon":
+                assert isinstance(s.plan, dict), "Expected inline plan"
+                return s.plan
+        raise AssertionError("SESS-llm-recon not found")
+
+    @pytest.fixture(scope="class")
+    def hybrid_plan(self, llm_campaign):
+        """Return the inline plan dict for SESS-hybrid-recon."""
+        for s in llm_campaign.sessions:
+            if s.session_id == "SESS-hybrid-recon":
+                assert isinstance(s.plan, dict), "Expected inline plan"
+                return s.plan
+        raise AssertionError("SESS-hybrid-recon not found")
+
+    @pytest.fixture(scope="class")
+    def mock_llm_plan(self, llm_campaign):
+        """Return the inline plan dict for SESS-mock-llm-report."""
+        for s in llm_campaign.sessions:
+            if s.session_id == "SESS-mock-llm-report":
+                assert isinstance(s.plan, dict), "Expected inline plan"
+                return s.plan
+        raise AssertionError("SESS-mock-llm-report not found")
+
+    @pytest.fixture
+    def llm_recon_agent(self, llm_recon_plan, monkeypatch):
+        """Build an AgentCore with LLM provider from YAML.
+
+        Uses ``type: openai`` in the YAML spec, which requires
+        ``OPENAI_API_KEY``. We set it here so the fixture can
+        create the provider without a real API key.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-llm-fixture")
+        return AgentCore.from_agentic_config(
+            config=llm_recon_plan["agentic_config"],
+            allowed_tools=llm_recon_plan.get("allowed_tools", []),
+            authorized_assets=llm_recon_plan.get("authorized_assets", []),
+            objective=llm_recon_plan.get("objective", ""),
+        )
+
+    @pytest.fixture
+    def hybrid_agent(self, hybrid_plan):
+        """Build an AgentCore with hybrid strategy from YAML."""
+        return AgentCore.from_agentic_config(
+            config=hybrid_plan["agentic_config"],
+            allowed_tools=hybrid_plan.get("allowed_tools", []),
+            authorized_assets=hybrid_plan.get("authorized_assets", []),
+            objective=hybrid_plan.get("objective", ""),
+        )
+
+    @pytest.fixture
+    def mock_llm_agent(self, mock_llm_plan):
+        """Build an AgentCore with mock LLM provider from YAML."""
+        return AgentCore.from_agentic_config(
+            config=mock_llm_plan["agentic_config"],
+            allowed_tools=mock_llm_plan.get("allowed_tools", []),
+            authorized_assets=mock_llm_plan.get("authorized_assets", []),
+            objective=mock_llm_plan.get("objective", ""),
+        )
+
+    # ------------------------------------------------------------------
+    # Campaign loading
+    # ------------------------------------------------------------------
+
+    def test_llm_campaign_loads(self, llm_campaign):
+        """LLM campaign YAML parses correctly."""
+        assert llm_campaign.campaign_id == "CAMP-PENTEST-LLM-2026-Q3"
+        assert len(llm_campaign.sessions) == 3
+
+    def test_llm_campaign_session_ids(self, llm_campaign):
+        """All 3 sessions have expected IDs."""
+        session_ids = {s.session_id for s in llm_campaign.sessions}
+        assert "SESS-llm-recon" in session_ids
+        assert "SESS-hybrid-recon" in session_ids
+        assert "SESS-mock-llm-report" in session_ids
+
+    def test_llm_campaign_has_llm_provider_config(self, llm_campaign):
+        """All sessions have llm_provider_config in their agentic_config."""
+        for s in llm_campaign.sessions:
+            ac = s.plan["agentic_config"]
+            assert "llm_provider_config" in ac, (
+                f"Session {s.session_id} missing llm_provider_config"
+            )
+            assert "type" in ac["llm_provider_config"], (
+                f"Session {s.session_id} llm_provider_config missing 'type'"
+            )
+
+    def test_llm_campaign_dependency_chain(self, llm_campaign):
+        """Session dependencies match expected chain."""
+        sessions = {s.session_id: s for s in llm_campaign.sessions}
+        assert sessions["SESS-hybrid-recon"].dependencies == ("SESS-llm-recon",)
+        assert sessions["SESS-mock-llm-report"].dependencies == ("SESS-hybrid-recon",)
+
+    def test_llm_campaign_drift_rules(self, llm_campaign):
+        """LLM campaign has drift rules."""
+        rule_ids = {r.id for r in llm_campaign.global_drift_rules}
+        assert "DRIFT-TARGET" in rule_ids
+        assert "DRIFT-TOOLS" in rule_ids
+        assert "DRIFT-SCHEMA" in rule_ids
+        assert "DRIFT-EXPIRY" in rule_ids
+
+    # ------------------------------------------------------------------
+    # LLM strategy agent (decision_strategy: llm)
+    # ------------------------------------------------------------------
+
+    def test_llm_recon_agent_config(self, llm_recon_agent, llm_recon_plan):
+        """Agent from LLM strategy YAML has correct config."""
+        assert llm_recon_agent.decision_strategy == "llm"
+        assert llm_recon_agent.llm_prompt is not None
+        assert "{{ allowed_tools }}" in llm_recon_plan["agentic_config"]["llm_prompt_template"]
+        assert llm_recon_agent.max_steps == 30
+        assert llm_recon_agent.stop_on_finding == "high"
+
+    def test_llm_recon_has_provider(self, llm_recon_agent):
+        """LLM strategy agent has an OpenAIProvider created from config.
+
+        The provider is eagerly created inside from_agentic_config when
+        llm_provider_config is present. The fixture sets OPENAI_API_KEY
+        to allow construction without a real key.
+        """
+        assert llm_recon_agent.llm_provider is not None
+        assert isinstance(llm_recon_agent.llm_provider, OpenAIProvider)
+        assert llm_recon_agent.llm_provider.model == "gpt-4o-mini"
+
+    def test_llm_recon_authorized_assets(self, llm_recon_agent):
+        """Two authorized assets loaded from YAML."""
+        assert len(llm_recon_agent.authorized_assets) == 2
+        assert "10.0.0.10" in llm_recon_agent.authorized_assets
+        assert "10.0.0.11" in llm_recon_agent.authorized_assets
+
+    def test_llm_recon_stop_conditions(self, llm_recon_agent):
+        """Stop conditions parsed from YAML."""
+        assert llm_recon_agent.stop_conditions is not None
+        assert len(llm_recon_agent.stop_conditions) == 2
+        types = [c["type"] for c in llm_recon_agent.stop_conditions]
+        assert "success_criterion_met" in types
+        assert "time_limit" in types
+
+    # ------------------------------------------------------------------
+    # Hybrid strategy agent (decision_strategy: hybrid)
+    # ------------------------------------------------------------------
+
+    def test_hybrid_agent_config(self, hybrid_agent, hybrid_plan):
+        """Agent from hybrid strategy YAML has correct config."""
+        assert hybrid_agent.decision_strategy == "hybrid"
+        assert hybrid_agent.llm_prompt is not None
+        assert "{{ state }}" in hybrid_plan["agentic_config"]["llm_prompt_template"]
+        assert hybrid_agent.max_steps == 50
+        assert hybrid_agent.stop_on_finding == "critical"
+
+    def test_hybrid_has_mock_provider(self, hybrid_agent):
+        """Hybrid strategy with type: mock creates a MockLLMProvider."""
+        assert hybrid_agent.llm_provider is not None
+        assert hybrid_agent.llm_provider.model == "gpt-4o-mini"
+
+    def test_hybrid_three_assets(self, hybrid_agent):
+        """Hybrid session has 3 authorized assets for rotation."""
+        assert len(hybrid_agent.authorized_assets) == 3
+        assert "10.0.0.12" in hybrid_agent.authorized_assets
+
+    # ------------------------------------------------------------------
+    # Mock LLM strategy agent (type: mock, no API key needed)
+    # ------------------------------------------------------------------
+
+    def test_mock_llm_agent_config(self, mock_llm_agent, mock_llm_plan):
+        """Agent from mock LLM strategy YAML has correct config."""
+        assert mock_llm_agent.decision_strategy == "llm"
+        assert mock_llm_agent.llm_prompt is not None
+        assert mock_llm_agent.max_steps == 10
+        assert mock_llm_agent._drift_check_enabled is False
+
+    def test_mock_llm_provider_is_mock(self, mock_llm_agent):
+        """type: mock creates a MockLLMProvider even without API key."""
+        assert mock_llm_agent.llm_provider is not None
+        assert mock_llm_agent.llm_provider.model == "mock"
+
+    def test_mock_llm_provider_generates_action(self, mock_llm_agent):
+        """MockLLMProvider from YAML config can generate actions."""
+        provider = mock_llm_agent.llm_provider
+        response = provider.generate("test prompt")
+        assert response is not None
+        import json
+        data = json.loads(response)
+        assert "tool" in data
+        assert "command" in data
+        assert provider.call_count == 1
+
+    # ------------------------------------------------------------------
+    # Existing campaign also parses llm_provider_config (commented)
+    # ------------------------------------------------------------------
+
+    def test_existing_campaign_has_commented_llm_config(self):
+        """The existing pentest-agentic-orchestrator.yaml has a commented-out
+        llm_provider_config section in Session 1's agentic_config.
+
+        We verify this by reading the raw YAML text, not the parsed config,
+        since commented lines are invisible to the parser."""
+        raw = self.AGENTIC_CAMPAIGN_PATH.read_text()
+        assert "# llm_provider_config:" in raw, (
+            "Expected commented-out llm_provider_config in "
+            "pentest-agentic-orchestrator.yaml"
+        )
+        assert "#   type: openai" in raw
+        assert "#   model: gpt-4o-mini" in raw
+        assert "#   temperature: 0.2" in raw
+        assert "#   max_tokens: 1024" in raw

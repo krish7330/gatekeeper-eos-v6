@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import time
+import unittest.mock
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,6 +37,7 @@ from gatekeeper_eos_v6.agentic import (
     parse_iso_duration,
     run_agent_loop,
 )
+from gatekeeper_eos_v6.providers import OpenAIProvider, AnthropicProvider, create_llm_provider
 
 
 # ===========================================================================
@@ -1414,6 +1416,423 @@ class TestLLMProvider:
         assert stalled_action is not None
         assert "RULE_ENGINE_STALLED" not in stalled_action.reasoning
         assert stalled_action.tool == "reporter"
+
+
+# ===========================================================================
+# OpenAIProvider
+# ===========================================================================
+
+
+class TestOpenAIProvider:
+    """Tests for OpenAIProvider — a real LLM provider backed by the OpenAI API.
+
+    All tests mock the internal OpenAI client so no real API calls are made.
+    """
+
+    def test_creates_client_with_env_key(self, monkeypatch):
+        """With OPENAI_API_KEY set, OpenAIProvider creates a client."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key-12345")
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+
+            provider = OpenAIProvider()
+
+            mock_openai.assert_called_once()
+            call_kwargs = mock_openai.call_args.kwargs
+            assert call_kwargs["api_key"] == "sk-test-key-12345"
+            assert provider.model == "gpt-4o-mini"
+
+    def test_creates_client_with_explicit_key(self, monkeypatch):
+        """Explicit api_key argument takes precedence over env var."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-should-be-ignored")
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+
+            provider = OpenAIProvider(api_key="sk-explicit")
+
+            call_kwargs = mock_openai.call_args.kwargs
+            assert call_kwargs["api_key"] == "sk-explicit"
+
+    def test_no_key_raises_value_error(self, monkeypatch):
+        """No API key in env or constructor -> ValueError."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+            OpenAIProvider()
+
+    def test_generate_success(self, monkeypatch):
+        """Successful API call returns parsed JSON string."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+
+            # Simulate a valid API response
+            mock_choice = unittest.mock.MagicMock()
+            mock_choice.message.content = '{"tool": "nmap", "command": "discover", "arguments": {"target": "10.0.0.1"}, "target": "10.0.0.1", "reasoning": "Initial recon"}'
+            mock_response = unittest.mock.MagicMock()
+            mock_response.choices = [mock_choice]
+            mock_client.chat.completions.create.return_value = mock_response
+
+            provider = OpenAIProvider()
+            result = provider.generate("Scan the target")
+
+            # Verify the response was returned and is valid JSON
+            parsed = json.loads(result)
+            assert parsed["tool"] == "nmap"
+            assert parsed["command"] == "discover"
+            assert provider.call_count == 1
+            assert provider.last_prompt == "Scan the target"
+            assert provider.last_raw_response == result
+
+            # Verify the API was called with expected args
+            mock_client.chat.completions.create.assert_called_once()
+            call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+            assert call_kwargs["model"] == "gpt-4o-mini"
+            assert len(call_kwargs["messages"]) == 2
+            assert call_kwargs["messages"][0]["role"] == "system"
+            assert call_kwargs["messages"][1]["role"] == "user"
+            assert call_kwargs["messages"][1]["content"] == "Scan the target"
+
+    def test_generate_invalid_json_returns_empty(self, monkeypatch):
+        """API returns non-JSON content -> returns empty string."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+
+            mock_choice = unittest.mock.MagicMock()
+            mock_choice.message.content = "This is not JSON"
+            mock_response = unittest.mock.MagicMock()
+            mock_response.choices = [mock_choice]
+            mock_client.chat.completions.create.return_value = mock_response
+
+            provider = OpenAIProvider()
+            result = provider.generate("test")
+
+            assert result == "", f"Expected empty string, got: {result}"
+            assert provider.last_raw_response == "This is not JSON"
+
+    def test_generate_api_error_returns_empty(self, monkeypatch):
+        """API call raises exception -> returns empty string."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+            mock_client.chat.completions.create.side_effect = Exception("API timeout")
+
+            provider = OpenAIProvider()
+            result = provider.generate("test")
+
+            assert result == "", f"Expected empty string on error, got: {result}"
+
+    def test_generate_tracks_multiple_calls(self, monkeypatch):
+        """Multiple calls increment call_count correctly."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+
+            mock_choice = unittest.mock.MagicMock()
+            mock_choice.message.content = '{"tool": "test", "command": "run"}'
+            mock_response = unittest.mock.MagicMock()
+            mock_response.choices = [mock_choice]
+            mock_client.chat.completions.create.return_value = mock_response
+
+            provider = OpenAIProvider()
+
+            provider.generate("call 1")
+            provider.generate("call 2")
+            provider.generate("call 3")
+
+            assert provider.call_count == 3
+
+    def test_custom_model_and_params(self, monkeypatch):
+        """Custom model, temperature, max_tokens passed to API."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+
+            mock_choice = unittest.mock.MagicMock()
+            mock_choice.message.content = '{"tool": "test", "command": "run"}'
+            mock_response = unittest.mock.MagicMock()
+            mock_response.choices = [mock_choice]
+            mock_client.chat.completions.create.return_value = mock_response
+
+            provider = OpenAIProvider(
+                model="gpt-4o",
+                temperature=0.8,
+                max_tokens=2048,
+                timeout=60,
+            )
+
+            assert provider.model == "gpt-4o"
+            provider.generate("test")
+
+            call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+            assert call_kwargs["model"] == "gpt-4o"
+            assert call_kwargs["temperature"] == 0.8
+            assert call_kwargs["max_tokens"] == 2048
+            assert call_kwargs["timeout"] == 60
+
+    def test_custom_base_url(self, monkeypatch):
+        """Custom base_url passed to OpenAI client constructor."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+
+            provider = OpenAIProvider(base_url="http://localhost:8080/v1")
+
+            call_kwargs = mock_openai.call_args.kwargs
+            assert call_kwargs["base_url"] == "http://localhost:8080/v1"
+
+    def test_create_llm_provider_factory(self, monkeypatch):
+        """create_llm_provider factory returns correct provider types."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        with unittest.mock.patch("openai.OpenAI") as mock_openai:
+            mock_client = unittest.mock.MagicMock()
+            mock_openai.return_value = mock_client
+
+            # OpenAI provider
+            openai_prov = create_llm_provider("openai")
+            assert isinstance(openai_prov, OpenAIProvider)
+
+            # Mock provider
+            mock_prov = create_llm_provider("mock")
+            assert isinstance(mock_prov, MockLLMProvider)
+
+            # Test provider (alias for mock)
+            test_prov = create_llm_provider("test")
+            assert isinstance(test_prov, MockLLMProvider)
+
+    def test_create_llm_provider_unknown_type(self):
+        """Unknown provider_type raises ValueError."""
+        with pytest.raises(ValueError, match="Unknown provider_type"):
+            create_llm_provider("nonexistent")
+
+
+# ===========================================================================
+# AnthropicProvider
+# ===========================================================================
+
+
+class TestAnthropicProvider:
+    """Tests for AnthropicProvider — a real LLM provider backed by the Anthropic API.
+
+    All tests mock the internal Anthropic client so no real API calls are made.
+    """
+
+    def test_creates_client_with_env_key(self, monkeypatch):
+        """With ANTHROPIC_API_KEY set, AnthropicProvider creates a client."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key-12345")
+
+        with unittest.mock.patch("anthropic.Anthropic") as mock_anthropic:
+            mock_client = unittest.mock.MagicMock()
+            mock_anthropic.return_value = mock_client
+
+            provider = AnthropicProvider()
+
+            mock_anthropic.assert_called_once()
+            call_kwargs = mock_anthropic.call_args.kwargs
+            assert call_kwargs["api_key"] == "sk-ant-test-key-12345"
+            assert provider.model == "claude-sonnet-4-20250514"
+
+    def test_creates_client_with_explicit_key(self, monkeypatch):
+        """Explicit api_key argument takes precedence over env var."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-should-be-ignored")
+
+        with unittest.mock.patch("anthropic.Anthropic") as mock_anthropic:
+            mock_client = unittest.mock.MagicMock()
+            mock_anthropic.return_value = mock_client
+
+            provider = AnthropicProvider(api_key="sk-ant-explicit")
+
+            call_kwargs = mock_anthropic.call_args.kwargs
+            assert call_kwargs["api_key"] == "sk-ant-explicit"
+
+    def test_no_key_raises_value_error(self, monkeypatch):
+        """No API key in env or constructor -> ValueError."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
+            AnthropicProvider()
+
+    def test_generate_success(self, monkeypatch):
+        """Successful API call returns parsed JSON string."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+        with unittest.mock.patch("anthropic.Anthropic") as mock_anthropic:
+            mock_client = unittest.mock.MagicMock()
+            mock_anthropic.return_value = mock_client
+
+            # Simulate a valid API response from Anthropic's Messages API
+            mock_content_block = unittest.mock.MagicMock()
+            mock_content_block.text = '{"tool": "nmap", "command": "discover", "arguments": {"target": "10.0.0.1"}, "target": "10.0.0.1", "reasoning": "Initial recon"}'
+            mock_response = unittest.mock.MagicMock()
+            mock_response.content = [mock_content_block]
+            mock_client.messages.create.return_value = mock_response
+
+            provider = AnthropicProvider()
+            result = provider.generate("Scan the target")
+
+            # Verify the response was returned and is valid JSON
+            parsed = json.loads(result)
+            assert parsed["tool"] == "nmap"
+            assert parsed["command"] == "discover"
+            assert provider.call_count == 1
+            assert provider.last_prompt == "Scan the target"
+            assert provider.last_raw_response == result
+
+            # Verify the API was called with expected args
+            mock_client.messages.create.assert_called_once()
+            call_kwargs = mock_client.messages.create.call_args.kwargs
+            assert call_kwargs["model"] == "claude-sonnet-4-20250514"
+            assert len(call_kwargs["messages"]) == 1
+            assert call_kwargs["messages"][0]["role"] == "user"
+            assert call_kwargs["messages"][0]["content"] == "Scan the target"
+            assert call_kwargs["system"] is not None
+            assert "DEFAULT_SYSTEM_PROMPT" not in repr(call_kwargs["system"])
+            assert "penetration-testing AI" in call_kwargs["system"]
+            assert call_kwargs["max_tokens"] == 1024
+
+    def test_generate_invalid_json_returns_empty(self, monkeypatch):
+        """API returns non-JSON content -> returns empty string."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+        with unittest.mock.patch("anthropic.Anthropic") as mock_anthropic:
+            mock_client = unittest.mock.MagicMock()
+            mock_anthropic.return_value = mock_client
+
+            mock_content_block = unittest.mock.MagicMock()
+            mock_content_block.text = "This is not JSON"
+            mock_response = unittest.mock.MagicMock()
+            mock_response.content = [mock_content_block]
+            mock_client.messages.create.return_value = mock_response
+
+            provider = AnthropicProvider()
+            result = provider.generate("test")
+
+            assert result == "", f"Expected empty string, got: {result}"
+            assert provider.last_raw_response == "This is not JSON"
+
+    def test_generate_empty_content_returns_empty(self, monkeypatch):
+        """API returns empty content -> returns empty string."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+        with unittest.mock.patch("anthropic.Anthropic") as mock_anthropic:
+            mock_client = unittest.mock.MagicMock()
+            mock_anthropic.return_value = mock_client
+
+            mock_response = unittest.mock.MagicMock()
+            mock_response.content = []
+            mock_client.messages.create.return_value = mock_response
+
+            provider = AnthropicProvider()
+            result = provider.generate("test")
+
+            assert result == "", f"Expected empty string, got: {result}"
+
+    def test_generate_api_error_returns_empty(self, monkeypatch):
+        """API call raises exception -> returns empty string."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+        with unittest.mock.patch("anthropic.Anthropic") as mock_anthropic:
+            mock_client = unittest.mock.MagicMock()
+            mock_anthropic.return_value = mock_client
+            mock_client.messages.create.side_effect = Exception("API timeout")
+
+            provider = AnthropicProvider()
+            result = provider.generate("test")
+
+            assert result == "", f"Expected empty string on error, got: {result}"
+
+    def test_generate_tracks_multiple_calls(self, monkeypatch):
+        """Multiple calls increment call_count correctly."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+        with unittest.mock.patch("anthropic.Anthropic") as mock_anthropic:
+            mock_client = unittest.mock.MagicMock()
+            mock_anthropic.return_value = mock_client
+
+            mock_content_block = unittest.mock.MagicMock()
+            mock_content_block.text = '{"tool": "test", "command": "run"}'
+            mock_response = unittest.mock.MagicMock()
+            mock_response.content = [mock_content_block]
+            mock_client.messages.create.return_value = mock_response
+
+            provider = AnthropicProvider()
+
+            provider.generate("call 1")
+            provider.generate("call 2")
+            provider.generate("call 3")
+
+            assert provider.call_count == 3
+
+    def test_custom_model_and_params(self, monkeypatch):
+        """Custom model, temperature, max_tokens passed to API."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+        with unittest.mock.patch("anthropic.Anthropic") as mock_anthropic:
+            mock_client = unittest.mock.MagicMock()
+            mock_anthropic.return_value = mock_client
+
+            mock_content_block = unittest.mock.MagicMock()
+            mock_content_block.text = '{"tool": "test", "command": "run"}'
+            mock_response = unittest.mock.MagicMock()
+            mock_response.content = [mock_content_block]
+            mock_client.messages.create.return_value = mock_response
+
+            provider = AnthropicProvider(
+                model="claude-3-5-sonnet-20241022",
+                temperature=0.8,
+                max_tokens=2048,
+                timeout=60,
+            )
+
+            assert provider.model == "claude-3-5-sonnet-20241022"
+            provider.generate("test")
+
+            call_kwargs = mock_client.messages.create.call_args.kwargs
+            assert call_kwargs["model"] == "claude-3-5-sonnet-20241022"
+            assert call_kwargs["temperature"] == 0.8
+            assert call_kwargs["max_tokens"] == 2048
+            assert call_kwargs["timeout"] == 60
+
+    def test_custom_base_url(self, monkeypatch):
+        """Custom base_url passed to Anthropic client constructor."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+        with unittest.mock.patch("anthropic.Anthropic") as mock_anthropic:
+            mock_client = unittest.mock.MagicMock()
+            mock_anthropic.return_value = mock_client
+
+            provider = AnthropicProvider(base_url="http://localhost:8080/v1")
+
+            call_kwargs = mock_anthropic.call_args.kwargs
+            assert call_kwargs["base_url"] == "http://localhost:8080/v1"
+
+    def test_create_llm_provider_factory_anthropic(self, monkeypatch):
+        """create_llm_provider factory returns AnthropicProvider for 'anthropic'."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+        with unittest.mock.patch("anthropic.Anthropic") as mock_anthropic:
+            mock_client = unittest.mock.MagicMock()
+            mock_anthropic.return_value = mock_client
+
+            prov = create_llm_provider("anthropic", model="claude-3-haiku-20240307")
+            assert isinstance(prov, AnthropicProvider)
+            assert prov.model == "claude-3-haiku-20240307"
 
 
 # ===========================================================================

@@ -1123,6 +1123,7 @@ class AgentCore:
           - llm_prompt / llm_prompt_template (alias)
           - max_time_seconds / max_duration (ISO 8601, alternative)
           - stop_conditions (array-based) supplements flat stop_on_finding
+          - llm_provider_config (dict with provider type, model, etc.)
         """
         # Parse max_time_seconds: prefer explicit value, then parse max_duration
         max_time = config.get("max_time_seconds")
@@ -1149,6 +1150,33 @@ class AgentCore:
                 fallback_on_empty=rule_config_raw.get("fallback_on_empty", "report"),
             )
 
+        # Auto-create LLM provider from config if specified
+        llm_provider = None
+        llm_provider_config = config.get("llm_provider_config")
+        if llm_provider_config:
+            provider_type = llm_provider_config.get("type", "openai")
+            if provider_type == "openai":
+                # Lazy import to avoid circular dependency
+                from gatekeeper_eos_v6.providers import OpenAIProvider
+
+                llm_provider = OpenAIProvider(
+                    model=llm_provider_config.get("model", "gpt-4o-mini"),
+                    temperature=llm_provider_config.get("temperature", 0.2),
+                    max_tokens=llm_provider_config.get("max_tokens", 1024),
+                )
+            elif provider_type == "anthropic":
+                from gatekeeper_eos_v6.providers import AnthropicProvider
+
+                llm_provider = AnthropicProvider(
+                    model=llm_provider_config.get("model", "claude-sonnet-4-20250514"),
+                    temperature=llm_provider_config.get("temperature", 0.2),
+                    max_tokens=llm_provider_config.get("max_tokens", 1024),
+                )
+            elif provider_type in ("mock", "test"):
+                llm_provider = MockLLMProvider(
+                    model=llm_provider_config.get("model", "mock"),
+                )
+
         return cls(
             allowed_tools=allowed_tools,
             authorized_assets=authorized_assets,
@@ -1156,6 +1184,7 @@ class AgentCore:
             success_criteria=success_criteria,
             decision_strategy=config.get("decision_strategy", "rule"),
             llm_prompt=llm_prompt,
+            llm_provider=llm_provider,
             max_steps=config.get("max_steps", 100),
             max_time_seconds=max_time,
             stop_on_finding=config.get("stop_on_finding", "none"),
