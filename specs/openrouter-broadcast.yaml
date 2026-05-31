@@ -1,0 +1,405 @@
+# =============================================================================
+# OpenRouter Multi-Model Orchestrator — Agentic Campaign with OpenRouterProvider
+#
+# Demonstrates how to wire OpenRouterProvider into the agentic reasoning loop
+# using OpenRouter's free model catalog.  Requires a single API key and gives
+# access to dozens of models (Llama, Mistral, Phi, Gemma, DeepSeek, Qwen, etc.)
+#
+# Required fields for ``llm_provider_config``:
+#
+#   type:         Provider type — use ``"openrouter"``.
+#                 Reads ``OPENROUTER_API_KEY`` from the environment.
+#
+#   model:        OpenRouter model ID (e.g. ``meta-llama/llama-3.2-3b-instruct:free``).
+#                 Free models use the ``:free`` suffix.
+#
+#   temperature:  Sampling temperature (default 0.2).
+#
+#   max_tokens:   Max tokens in the response (default 1024).
+#
+# Environment variable required:
+#   export OPENROUTER_API_KEY=sk-or-...
+#
+# To see the full list of free models:
+#   curl -s https://openrouter.ai/api/v1/models | jq '.data[] | select(.id | contains(":free")) | .id'
+#
+# Popular free models (as of mid-2026):
+#   meta-llama/llama-3.2-3b-instruct:free     — fastest, good for classification
+#   microsoft/phi-3-mini-4k-instruct:free      — compact, great reasoning
+#   google/gemma-2-2b-it:free                  — Google's lightweight instruct
+#   mistralai/mistral-7b-instruct:free         — strong general-purpose
+#   deepseek/deepseek-chat:free                — strong coding & analysis
+#   qwen/qwen-2.5-7b-instruct:free             — balanced speed/quality
+# =============================================================================
+campaign_id: CAMP-OPENROUTER-2026-Q3
+
+sessions:
+  # ---------------------------------------------------------------------------
+  # Session 1: LLM-driven recon with Llama 3.2 via OpenRouter
+  # Uses OpenRouterProvider with a fast free model for action selection.
+  # ---------------------------------------------------------------------------
+  - session_id: SESS-or-llama-recon
+    plan:
+      plan_id: PLAN-OR-LLAMA-RECON-01
+      authorized_assets:
+        - "10.0.0.10"
+        - "10.0.0.11"
+      allowed_tools:
+        - name: nmap
+          version: "7.95"
+          hash: "sha256:NMAP_HASH"
+          allowed_commands: ["discover", "scan", "fingerprint"]
+        - name: dns-enum
+          version: "1.0"
+          hash: "sha256:DNS_HASH"
+          allowed_commands: ["subdomains", "mx-records", "zone-transfer"]
+        - name: reporter
+          version: "1.0"
+          hash: "sha256:REPORT_HASH"
+          allowed_commands: ["summary", "findings"]
+      objective: "Discover all open ports, running services, and technology stack on target assets using Llama 3.2 via OpenRouter."
+      success_criteria:
+        - "All open ports on targets identified"
+        - "Service versions fingerprinted"
+      rollback_steps: []
+      approval_state: approved
+      expiry: "2026-09-30T23:59:59Z"
+      signature: "ed25519:OR_LLAMA_RECON_SIG"
+      agentic_config:
+        enabled: true
+        max_steps: 30
+        max_time_seconds: 600
+        decision_strategy: llm
+        llm_prompt_template: >
+          You are a reconnaissance AI. Choose the next action based on
+          the current state of the assessment.
+
+          Available tools: {{ allowed_tools }}
+          Authorized targets: {{ authorized_assets }}
+          Objective: {{ objective }}
+          Current state: {{ state }}
+          Step: {{ step }}
+
+          Respond with valid JSON only — no markdown, no commentary.
+
+        # ── OpenRouter provider with Llama 3.2 (free) ──────────────────
+        # Uses OPENROUTER_API_KEY from the environment.  The :free suffix
+        # ensures no charges are incurred for this session.
+        llm_provider_config:
+          type: openrouter
+          model: meta-llama/llama-3.2-3b-instruct:free
+          temperature: 0.2
+          max_tokens: 1024
+          # Optional: rate limiter protects against sudden spikes
+          rate_limiter_config:
+            capacity: 60
+            tokens_per_second: 3.0
+          # Optional: circuit breaker stops retrying if OpenRouter is down
+          circuit_breaker_config:
+            failure_threshold: 5
+            recovery_timeout: 60.0
+            half_open_max_retries: 2
+
+        stop_on_finding: high
+        stop_on_criteria_met: true
+        stop_conditions:
+          - type: success_criterion_met
+          - type: time_limit
+            value: PT15M
+        allow_human_in_the_loop: false
+        agent_state_drift_check: true
+    schedule:
+      start_at: "2026-07-01T02:00:00Z"
+      max_duration: "PT60M"
+    max_parallel_actions: 1
+
+  # ---------------------------------------------------------------------------
+  # Session 2: Hybrid recon with Phi-3 via OpenRouter
+  # Uses decision_strategy: hybrid — rule engine runs normally, but if it
+  # stalls (3+ identical actions), Phi-3 is consulted for a fresh action.
+  # ---------------------------------------------------------------------------
+  - session_id: SESS-or-phi-hybrid
+    plan:
+      plan_id: PLAN-OR-PHI-HYBRID-01
+      authorized_assets:
+        - "10.0.0.10"
+        - "10.0.0.12"
+      allowed_tools:
+        - name: nmap
+          version: "7.95"
+          hash: "sha256:NMAP_HASH"
+          allowed_commands: ["discover", "scan", "fingerprint"]
+        - name: reporter
+          version: "1.0"
+          hash: "sha256:REPORT_HASH"
+          allowed_commands: ["summary", "findings"]
+      objective: "Discover all open ports using deterministic rules, with Phi-3 fallback on stall."
+      success_criteria:
+        - "All open ports on targets identified"
+      rollback_steps: []
+      approval_state: approved
+      expiry: "2026-09-30T23:59:59Z"
+      signature: "ed25519:OR_PHI_HYBRID_SIG"
+      agentic_config:
+        enabled: true
+        max_steps: 50
+        max_time_seconds: 900
+        decision_strategy: hybrid
+        llm_prompt_template: >
+          The rule engine has stalled on step {{ step }}.
+          Current state: {{ state }}
+          Available tools: {{ allowed_tools }}
+          Targets: {{ authorized_assets }}
+          Objective: {{ objective }}
+          Choose a different action to break the stall. JSON only.
+        llm_provider_config:
+          type: openrouter
+          model: microsoft/phi-3-mini-4k-instruct:free
+          temperature: 0.3
+          max_tokens: 1024
+        stop_on_finding: critical
+        stop_on_criteria_met: true
+        allow_human_in_the_loop: false
+        agent_state_drift_check: true
+    schedule:
+      start_at: "2026-07-01T03:00:00Z"
+      deadline: "2026-07-01T05:00:00Z"
+    dependencies:
+      - SESS-or-llama-recon
+    max_parallel_actions: 1
+
+  # ---------------------------------------------------------------------------
+  # Session 3: DeepSeek-powered cross-reference analysis via OpenRouter
+  # Uses DeepSeek Chat (free) for intelligence-driven correlation of findings
+  # from the first two sessions.
+  # ---------------------------------------------------------------------------
+  - session_id: SESS-or-deepseek-analysis
+    plan:
+      plan_id: PLAN-OR-DEEPSEEK-ANALYSIS-01
+      authorized_assets:
+        - "10.0.0.10"
+      allowed_tools:
+        - name: evidence-compiler
+          version: "1.0"
+          hash: "sha256:EVIDENCE_HASH"
+          allowed_commands: ["compile", "cross-reference"]
+        - name: reporter
+          version: "1.0"
+          hash: "sha256:REPORT_HASH"
+          allowed_commands: ["summary", "findings"]
+      objective: "Cross-reference all findings across sessions using DeepSeek's strong reasoning via OpenRouter."
+      success_criteria:
+        - "All findings correlated across sessions"
+        - "Risk scoring completed"
+      rollback_steps: []
+      approval_state: approved
+      expiry: "2026-09-30T23:59:59Z"
+      signature: "ed25519:OR_DEEPSEEK_ANALYSIS_SIG"
+      agentic_config:
+        enabled: true
+        max_steps: 25
+        max_time_seconds: 900
+        decision_strategy: llm
+        llm_prompt_template: >
+          You are a senior security analyst using DeepSeek Chat. Cross-reference
+          all findings from the completed sessions and produce a correlated
+          risk assessment.
+          All findings: {{ state }}
+          Tools: {{ allowed_tools }}
+          Objective: {{ objective }}
+          Respond with valid JSON only.
+        llm_provider_config:
+          type: openrouter
+          model: deepseek/deepseek-chat:free
+          temperature: 0.2
+          max_tokens: 2048
+          # No rate limiter or circuit breaker here — shows defaults are used
+        stop_on_criteria_met: true
+        stop_conditions:
+          - type: max_steps
+            value: "25"
+        agent_state_drift_check: true
+    schedule:
+      start_at: "2026-07-01T04:00:00Z"
+      deadline: "2026-07-01T06:00:00Z"
+    dependencies:
+      - SESS-or-phi-hybrid
+    max_parallel_actions: 1
+
+  # ---------------------------------------------------------------------------
+  # Session 4: Mistral-powered report generation via OpenRouter
+  # Uses Mistral 7B (free) for final report writing with a higher temperature
+  # for more creative synthesis.
+  # ---------------------------------------------------------------------------
+  - session_id: SESS-or-mistral-report
+    plan:
+      plan_id: PLAN-OR-MISTRAL-REPORT-01
+      authorized_assets:
+        - "10.0.0.10"
+      allowed_tools:
+        - name: reporter
+          version: "1.0"
+          hash: "sha256:REPORT_HASH"
+          allowed_commands: ["summary", "findings"]
+        - name: evidence-compiler
+          version: "1.0"
+          hash: "sha256:EVIDENCE_HASH"
+          allowed_commands: ["compile", "cross-reference"]
+      objective: "Generate a comprehensive findings report with Mistral-driven synthesis."
+      success_criteria:
+        - "Report generated with all findings"
+      rollback_steps: []
+      approval_state: approved
+      expiry: "2026-09-30T23:59:59Z"
+      signature: "ed25519:OR_MISTRAL_REPORT_SIG"
+      agentic_config:
+        enabled: true
+        max_steps: 15
+        max_time_seconds: 600
+        decision_strategy: llm
+        llm_prompt_template: >
+          You are a senior penetration-testing report analyst. Based on
+          the findings in state, choose the next reporting action.
+          State: {{ state }}
+          Tools: {{ allowed_tools }}
+          Targets: {{ authorized_assets }}
+          Respond with valid JSON only.
+        llm_provider_config:
+          type: openrouter
+          model: mistralai/mistral-7b-instruct:free
+          temperature: 0.5                    # higher for creative synthesis
+          max_tokens: 2048
+          rate_limiter_config:
+            capacity: 120
+            tokens_per_second: 5.0
+        stop_on_criteria_met: true
+        stop_conditions:
+          - type: max_steps
+            value: "15"
+        agent_state_drift_check: true
+    schedule:
+      start_at: "2026-07-01T05:00:00Z"
+      deadline: "2026-07-01T07:00:00Z"
+    dependencies:
+      - SESS-or-deepseek-analysis
+    max_parallel_actions: 1
+
+  # ---------------------------------------------------------------------------
+  # Session 5: Multi-model validation using Qwen via OpenRouter
+  # Demonstrates an inexpensive cross-check session using a different free
+  # model to validate findings from the earlier sessions.
+  # ---------------------------------------------------------------------------
+  - session_id: SESS-or-qwen-validation
+    plan:
+      plan_id: PLAN-OR-QWEN-VALIDATION-01
+      authorized_assets:
+        - "10.0.0.10"
+        - "10.0.0.12"
+      allowed_tools:
+        - name: reporter
+          version: "1.0"
+          hash: "sha256:REPORT_HASH"
+          allowed_commands: ["summary", "findings"]
+        - name: evidence-compiler
+          version: "1.0"
+          hash: "sha256:EVIDENCE_HASH"
+          allowed_commands: ["compile", "cross-reference"]
+      objective: "Validate findings across all previous sessions using Qwen for independent review."
+      success_criteria:
+        - "All findings validated by Qwen"
+        - "No false positives remaining"
+      rollback_steps: []
+      approval_state: approved
+      expiry: "2026-09-30T23:59:59Z"
+      signature: "ed25519:OR_QWEN_VALIDATION_SIG"
+      agentic_config:
+        enabled: true
+        max_steps: 20
+        max_time_seconds: 600
+        decision_strategy: llm
+        llm_prompt_template: >
+          You are a validation AI using Qwen. Review the findings from
+          all previous sessions and identify any discrepancies or false
+          positives.
+          State: {{ state }}
+          Tools: {{ allowed_tools }}
+          Targets: {{ authorized_assets }}
+          Respond with valid JSON only.
+        llm_provider_config:
+          type: openrouter
+          model: qwen/qwen-2.5-7b-instruct:free
+          temperature: 0.1                    # low for deterministic validation
+          max_tokens: 1024
+        stop_on_criteria_met: true
+        stop_conditions:
+          - type: max_steps
+            value: "20"
+        agent_state_drift_check: true
+    schedule:
+      start_at: "2026-07-01T06:00:00Z"
+      deadline: "2026-07-01T08:00:00Z"
+    dependencies:
+      - SESS-or-mistral-report
+    max_parallel_actions: 1
+
+  # ---------------------------------------------------------------------------
+  # Session 6: Mock provider fallback (no API key needed)
+  # Shows that OpenRouter specs can still use "mock" for offline testing.
+  # ---------------------------------------------------------------------------
+  - session_id: SESS-or-mock-test
+    plan:
+      plan_id: PLAN-OR-MOCK-TEST-01
+      authorized_assets:
+        - "10.0.0.10"
+      allowed_tools:
+        - name: reporter
+          version: "1.0"
+          hash: "sha256:REPORT_HASH"
+          allowed_commands: ["summary", "findings"]
+      objective: "Test the OpenRouter campaign pipeline with mock provider."
+      success_criteria:
+        - "Pipeline executes without API key"
+      rollback_steps: []
+      approval_state: approved
+      expiry: "2026-09-30T23:59:59Z"
+      signature: "ed25519:OR_MOCK_TEST_SIG"
+      agentic_config:
+        enabled: true
+        max_steps: 10
+        max_time_seconds: 300
+        decision_strategy: llm
+        llm_prompt_template: >
+          You are a test AI. Confirm the pipeline is working. JSON only.
+          State: {{ state }}
+          Tools: {{ allowed_tools }}
+        llm_provider_config:
+          type: mock
+          model: mock
+        stop_on_criteria_met: true
+        stop_conditions:
+          - type: max_steps
+            value: "10"
+        agent_state_drift_check: false
+    schedule:
+      start_at: "2026-07-01T07:00:00Z"
+      deadline: "2026-07-01T09:00:00Z"
+    dependencies:
+      - SESS-or-qwen-validation
+    max_parallel_actions: 1
+
+# ---------------------------------------------------------------------------
+# Global drift rules — halt on any unauthorized expansion
+# ---------------------------------------------------------------------------
+global_drift_rules:
+  - id: DRIFT-TARGET
+    description: "Target assets must not expand beyond authorized_assets."
+    action: HALT
+  - id: DRIFT-TOOLS
+    description: "Only approved tools with matching hashes may be used."
+    action: HALT
+  - id: DRIFT-SCHEMA
+    description: "Output schema violations are warnings only."
+    action: LOG_ONLY
+  - id: DRIFT-EXPIRY
+    description: "No session may continue past the campaign expiry date."
+    action: HALT

@@ -2,7 +2,8 @@
 
 > **Generate production-ready multi-agent AI systems from a single YAML spec.**
 
-[![Tests](https://img.shields.io/badge/tests-733%20passed-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-917%20passed-brightgreen)](tests/)
+[![OpenRouter](https://img.shields.io/badge/OpenRouter-️-supported-blue)](docs/openrouter.md)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](pyproject.toml)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Version](https://img.shields.io/badge/version-1.0.0-blue)](pyproject.toml)
@@ -20,6 +21,7 @@ Gatekeeper EOS v6 is a **code-generation factory** for multi-agent AI systems. D
 - **21 ready-made specs** — covering healthcare, legal, security, content, research, and more
 - **Batch generation** — regenerate all systems with one command via `specs/batch.yaml`
 - **OpenAI-compatible** — works with any provider (Groq, OpenRouter, etc.) via `OPENAI_BASE_URL`
+- **OpenRouter** — 200+ models through a single endpoint with rate limiter and circuit breaker support ([docs](docs/openrouter.md))
 
 ### Agentic Runtime
 
@@ -30,7 +32,7 @@ Gatekeeper EOS v6 is a **code-generation factory** for multi-agent AI systems. D
 
 ### Test Coverage
 
-- **733 tests** — covering generation, validation, agentic loop, snapshot integrity, hybrid stall detection, E2E YAML, and campaign orchestration
+- **917 tests** — covering generation, validation, agentic loop, snapshot integrity, hybrid stall detection, E2E YAML, campaign orchestration, and OpenRouter provider
 
 ---
 
