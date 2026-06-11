@@ -45,10 +45,9 @@
 
 ### Cycle 7 — Medical AI Audit v0.1
 **Capability:** Single function `demographic_parity_difference()` — absolute difference of two rates.  
-**Still used?** PARTIALLY — Function exists, not yet wired into jarvis.py CLI.  
+**Still used?** YES — Wired into `jarvis.py medical-audit` CLI via Cycle 10.  
 **Dependencies introduced:** `medical_audit.py` (17 lines), 1 test.  
-**Build again?** YES — Pure function, zero infrastructure, minimal slice.  
-**Note:** Needs Cycle 10 to wire into CLI — currently an orphaned capability.
+**Build again?** YES — Pure function, zero infrastructure, minimal slice.
 
 ### Cycle 8 — EOS Constitution v0.1
 **Capability:** `constitution.json` — 3 human-readable policy rules (allow in workspace, block outside, block unknown tools).  
@@ -62,29 +61,35 @@
 **Dependencies introduced:** `_load_constitution()`, `_constitution_decision()`, `_normalize_condition()`.  
 **Build again?** YES — Insertion layer, backward compatible, tested.
 
+### Cycle 10 — Medical AI Wired to CLI
+**Capability:** `jarvis.py medical-audit <rate1> <rate2>` — Gatekeeper gate → `demographic_parity_difference()` → plain text output.  
+**Still used?** YES — Active CLI entry point for medical audit.  
+**Dependencies introduced:** `_print_plain()`, 3 CLI tests (ALLOW, BLOCK, bad args).  
+**Build again?** YES — Resolved orphaned capability, increased Integration Depth to 5.
+
 ---
 
 ## Metrics
 
-### Execution Reliability: 9/9
+### Execution Reliability: 10/10
 **Were any cycles artificially split?** NO — Each cycle added a distinct capability or integration point. No cycle could be meaningfully subdivided.
 
 ### Scope Integrity
 **Did any cycle quietly exceed its intended scope?** None verified.
 
-### Integration Depth: 4
+### Integration Depth: 5
 **Can the full path still be demonstrated?**
 
 ```
-User → jarvis.py oracle → Gatekeeper.evaluate_action() → Constitution rules checked
-                                                           ↓
-                                                      policy.json fallback
-                                                           ↓
-                                                      ALLOW → oracle_v0.1.extract_red_spans()
-                                                      BLOCK → exit 3 with reason
+User → jarvis.py oracle/medical-audit → Gatekeeper.evaluate_action() → Constitution rules checked
+                                                                         ↓
+                                                                    policy.json fallback
+                                                                         ↓
+                                                                    ALLOW → Oracle (extract_red_spans) or Medical AI (demographic_parity)
+                                                                    BLOCK → exit 3 with reason
 ```
 
-**YES** — Verified live. All 16 tests pass. Each layer tested independently and end-to-end.
+**YES** — Verified live. All 19 tests pass. Each layer tested independently and end-to-end.
 
 ---
 
@@ -95,17 +100,17 @@ User → jarvis.py oracle → Gatekeeper.evaluate_action() → Constitution rule
 | Unused abstractions | None found |
 | Premature generalizations | None found |
 | Features creating maintenance burden | None found |
-| Features that paid unexpected dividends | Gatekeeper's `evaluate_action()` dict interface — used by Oracle, CLI, and Constitution equally |
+| Features that paid unexpected dividends | Gatekeeper's `evaluate_action()` dict interface — used by Oracle, CLI, Medical AI, and Constitution equally |
 
 ---
 
 ## Compounding Assets (ranked)
 
 1. **GatekeeperPolicy.evaluate_action()** — Every subsequent cycle integrated against this single interface.
-2. **policy.json** — Decoupled config enabled Cycle 3 and Cycle 9 without rewrites.
-3. **Jarvis CLI** — Integration point for all future modules (Oracle wired, Medical AI queued).
+2. **Jarvis CLI** — Integration point for all modules (Oracle wired, Medical AI wired).
+3. **policy.json** — Decoupled config enabled Cycle 3 and Cycle 9 without rewrites.
 4. **Constitution rules** — Plaintext, forkable, replaceable without code changes.
-5. **Jarvis tests** — 16 tests across 5 suites, all pass, none flaky.
+5. **Jarvis tests** — 19 tests across 5 suites, all pass, none flaky.
 
 ---
 
@@ -115,32 +120,26 @@ User → jarvis.py oracle → Gatekeeper.evaluate_action() → Constitution rule
 
 **We overbuilt:** Nothing. Every slice was minimal. `medical_audit.py` at 17 lines is the evidence.
 
-**We should preserve:** The `specify → implement → test → commit → integrate → repeat` loop. Also: the one-file-one-responsibility constraint.
+**We should preserve:** The `specify → implement → test → commit → integrate → audit → redirect` loop.
 
-**We should stop doing:** Shipping orphaned capabilities. Cycle 7 (Medical AI) is not wired into the CLI — it's a loose module. Every cycle should prove integration.
+**We should stop doing:** Nothing. The only orphaned capability (Cycle 7) was resolved by Cycle 10.
 
 ---
 
-## Decision for Cycle 10
+## Decision for Cycle 11
 
-**Choice: INTEGRATE**
+**Choice: HARDEN**
 
-**Justification:** The orphaned capability from Cycle 7 (Medical AI Audit) and the unburdened path to Cycle 10 is to wire it through `jarvis.py` so the chain becomes:
-
-```
-User → jarvis.py medical_audit → Gatekeeper → Medical AI → Structured Result
-```
-
-This increases Integration Depth to 5 without adding new capabilities. It proves every shipped artifact composes, not just lives.
+**Justification:** With 10 cycles of compounding integration, the system needs adversarial testing. Cycle 11 should feed path traversal payloads (`../../etc/passwd`), shell metacharacters, and unauthorized tool requests to `jarvis.py` CLI and assert Gatekeeper blocks every one.
 
 ---
 
 ## Final Verdict
 
-**The loop is producing compounding value.** Each cycle demonstrably increased system capability or durability. No cycle was wasted. No cycle required rework.
+**The loop is producing compounding value.** Every cycle demonstrably increased system capability, durability, or integration depth. No cycle was wasted. No cycle required rework.
 
-Cycle 10 proceeds from evidence, not momentum.
+Cycle 10 proved the audit's recommendation was correct: the orphan became an asset.
 
 ---
 
-*Audit completed 2026-06-11. 16/16 tests passing. Zero scope violations. Integration Depth: 4.*
+*Audit updated 2026-06-11. 19/19 tests passing. Zero scope violations. Integration Depth: 5. Speed Integer: 10.*
