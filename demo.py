@@ -6,8 +6,10 @@ Runs a medical audit scenario through the full Jarvis chain:
     Request → Gatekeeper → Constitution → Medical AI → Audit Log → Result
 
 Usage:
-    python demo.py
+    python demo.py                        # Run with default scenario
+    python demo.py --help                 # Show this message
 """
+import argparse
 import json
 import os
 import sys
@@ -27,18 +29,29 @@ from medical_audit import demographic_parity_difference
 
 def print_step(label: str, detail: str = ""):
     """Print a formatted step in the chain."""
-    print(f"  │  {label}")
+    print(f"  |  {label}")
     if detail:
         for line in detail.split("\n"):
-            print(f"  │    {line}")
+            print(f"  |    {line}")
 
 
-def main():
+def main(argv: list[str] | None = None) -> int:
+    # Parse --help if provided; otherwise run with defaults.
+    # When argv is None (called from CLI), argparse reads sys.argv.
+    # When argv is provided (called from tests), use those args.
+    parser = argparse.ArgumentParser(
+        description="Personal Jarvis — end-to-end workflow demonstration.",
+    )
+    parser.parse_known_args(argv)  # --help triggers sys.exit(0); unknown args ignored
+
+    group1_rate = 0.72
+    group2_rate = 0.45
+
     print()
-    print("  ╔══════════════════════════════════════════╗")
-    print("  ║        Personal Jarvis — Demo           ║")
-    print("  ║   One end-to-end workflow               ║")
-    print("  ╚══════════════════════════════════════════╝")
+    print("  +---------------------------------------------+")
+    print("  |         Personal Jarvis -- Demo             |")
+    print("  |   One end-to-end workflow                  |")
+    print("  +---------------------------------------------+")
     print()
 
     # ------------------------------------------------------------------
@@ -71,20 +84,19 @@ def main():
         # ------------------------------------------------------------------
         # Step 1: Request
         # ------------------------------------------------------------------
-        print("  ┌─ Step 1: User Request")
-        print_step('Request: "Run a medical audit on Scenario A"')
+        print("  +- Step 1: User Request")
+        print_step("A user submits a medical audit request.")
         print_step("Tool: medical_audit")
         tool = "medical_audit"
         target = "Scenario A"
-        group1_rate = 0.72
-        group2_rate = 0.45
-        print_step(f"Rates: group1={group1_rate}, group2={group2_rate}")
+        print_step(f"Parameters: group1_rate={group1_rate}, group2_rate={group2_rate}")
         print()
 
         # ------------------------------------------------------------------
         # Step 2: Gatekeeper Evaluation
         # ------------------------------------------------------------------
-        print("  ┌─ Step 2: Gatekeeper Evaluation")
+        print("  +- Step 2: Gatekeeper Evaluation")
+        print_step("The policy engine checks if the tool is authorized.")
         decision = gatekeeper.evaluate_action({"tool": tool, "target": target})
         print_step(f"Decision: {decision['status']}")
         print_step(f"Reason: {decision['reason']}")
@@ -95,7 +107,8 @@ def main():
         # ------------------------------------------------------------------
         # Step 3: Constitution Rules Check
         # ------------------------------------------------------------------
-        print("  ┌─ Step 3: Constitution Rules")
+        print("  +- Step 3: Constitution Rules")
+        print_step("The EOS Constitution is checked for applicable rules.")
         print_step(f"Loaded {len(gatekeeper.constitution_rules)} rules from constitution.json")
         print_step(f"Active rules: {[r['id'] for r in gatekeeper.constitution_rules]}")
         print_step("No medical_audit-specific rule — falls through to policy.json")
@@ -104,7 +117,8 @@ def main():
         # ------------------------------------------------------------------
         # Step 4: Medical AI Execution
         # ------------------------------------------------------------------
-        print("  ┌─ Step 4: Medical AI Execution")
+        print("  +- Step 4: Medical AI Execution")
+        print_step("The Medical AI module computes demographic parity.")
         parity_diff = demographic_parity_difference(group1_rate, group2_rate)
         print_step(f"demographic_parity_difference({group1_rate}, {group2_rate})")
         print_step(f"Result: {parity_diff:.4f}")
@@ -123,7 +137,8 @@ def main():
         # ------------------------------------------------------------------
         # Step 5: Audit Log
         # ------------------------------------------------------------------
-        print("  ┌─ Step 5: Audit Log Recording")
+        print("  +- Step 5: Audit Log Recording")
+        print_step("Every decision is recorded with hash-chain integrity.")
         with open(audit_log_path) as f:
             entries = f.readlines()
         print_step(f"Entries recorded: {len(entries)}")
@@ -136,34 +151,54 @@ def main():
         # Verify integrity
         errors = audit.verify()
         if not errors:
-            print_step("Audit integrity: ✅ INTACT (hash chain verified)")
+            print_step("Audit integrity: INTACT (hash chain verified)")
         else:
-            print_step(f"Audit integrity: ❌ COMPROMISED — {errors}")
+            print_step(f"Audit integrity: COMPROMISED — {errors}")
         print()
 
         # ------------------------------------------------------------------
         # Result
         # ------------------------------------------------------------------
-        print("  ╔══════════════════════════════════════════╗")
-        print("  ║           Demo Complete ✅               ║")
-        print("  ╚══════════════════════════════════════════╝")
+        print("  +---------------------------------------------+")
+        print("  |           Demo Complete                     |")
+        print("  +---------------------------------------------+")
         print()
-        print("  Chain:")
+        print("  Full chain executed:")
         print("    User Request")
-        print("       ↓")
+        print("       |")
         print("    Gatekeeper (evaluate_action)")
-        print("       ↓")
+        print("       |")
         print("    Constitution Rules")
-        print("       ↓")
+        print("       |")
         print("    Medical AI (demographic_parity_difference)")
-        print("       ↓")
+        print("       |")
         print(f"    Result: {parity_diff:.4f} — {interpretation}")
-        print("       ↓")
-        print(f"    Audit Log ({len(entries)} entries, integrity: ✅ intact)")
+        print("       |")
+        print(f"    Audit Log ({len(entries)} entries, integrity: intact)")
         print()
 
     # Temp directory and all files cleaned up automatically
-    print("  Temp workspace cleaned up.")
+    print("  Temporary workspace cleaned up.")
+    print()
+
+    # ------------------------------------------------------------------
+    # What next?
+    # ------------------------------------------------------------------
+    print("  ----------------------------------------------")
+    print("  Explore further:")
+    print()
+    print("    See the source files:")
+    print("      medical_audit.py    — The Medical AI module")
+    print("      constitution.json  — The EOS Constitution rules")
+    print("      policy.json        — The Gatekeeper policy")
+    print("      src/               — Jarvis source code")
+    print()
+    print("    Run the tests:")
+    print("      python -m pytest tests/ -q")
+    print()
+    print("    Read the docs:")
+    print("      README.md          — Full documentation")
+    print("      FRICTION_LOG.md    — User feedback log")
     print()
     return 0
 
