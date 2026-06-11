@@ -1,6 +1,7 @@
 # gatekeeper-eos-v6
 
-> **Generate production-ready multi-agent AI systems from a single YAML spec.**
+> **Personal Jarvis — Constitution-driven policy enforcement with audit logging.**
+> Also: **Generate production-ready multi-agent AI systems from a single YAML spec.**
 
 [![Tests](https://img.shields.io/badge/tests-917%20passed-brightgreen)](tests/)
 [![OpenRouter](https://img.shields.io/badge/OpenRouter-️-supported-blue)](docs/openrouter.md)
@@ -8,7 +9,42 @@
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Version](https://img.shields.io/badge/version-1.0.0-blue)](pyproject.toml)
 
-Gatekeeper EOS v6 is a **code-generation factory** for multi-agent AI systems. Define your agents and orchestration pattern in YAML — the factory renders a complete, runnable Python project using the OpenAI Agents SDK or LangGraph.
+---
+
+## Personal Jarvis — Quick Start
+
+One command proves Jarvis exists:
+
+```bash
+git clone https://github.com/krishanumala/gatekeeper-eos-v6
+cd gatekeeper-eos-v6
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python demo.py
+```
+
+**What you'll see:** A 5-step end-to-end workflow:
+
+```
+Request → Gatekeeper → Constitution → Medical AI → Audit Log → Result
+```
+
+Each step prints real output from the running system. No API keys required. No internet needed.
+
+### Fresh machine checklist
+
+| Requirement | Status |
+|-------------|--------|
+| `pip install -r requirements.txt` works | ✅ Verified |
+| `python demo.py` exits 0 | ✅ Verified |
+| No tribal knowledge needed | ✅ All dependencies declared |
+| Works inside virtual environment | ✅ Verified |
+
+---
+
+## Code Generation Factory
+
+Gatekeeper EOS v6 is also a **code-generation factory** for multi-agent AI systems. Define your agents and orchestration pattern in YAML — the factory renders a complete, runnable Python project using the OpenAI Agents SDK or LangGraph.
 
 ---
 
@@ -36,7 +72,7 @@ Gatekeeper EOS v6 is a **code-generation factory** for multi-agent AI systems. D
 
 ---
 
-## Quick Start
+## Quick Start (Code Generation)
 
 ```bash
 git clone https://github.com/krishanumala/gatekeeper-eos-v6
@@ -183,6 +219,10 @@ systems:
 ├── logs/               # Run logs (file bridge for copy/paste)
 ├── src/                # Factory source code
 ├── tests/              # 105 tests
+├── demo.py             # Personal Jarvis demo — one command, one workflow
+├── medical_audit.py    # Medical AI Audit v0.1
+├── constitution.json   # EOS Constitution rules
+├── policy.json         # Gatekeeper policy configuration
 └── pyproject.toml
 ```
 

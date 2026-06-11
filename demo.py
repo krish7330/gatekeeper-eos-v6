@@ -13,9 +13,15 @@ import os
 import sys
 import tempfile
 
+# Ensure the package is importable whether installed or run from repo root
+_repo_root = os.path.dirname(os.path.abspath(__file__))
+_src_path = os.path.join(_repo_root, "src")
+if os.path.isdir(_src_path) and _src_path not in sys.path:
+    sys.path.insert(0, _src_path)
+
 # Import Jarvis modules
-from src.gatekeeper_eos_v6.policy import GatekeeperPolicy
-from src.gatekeeper_eos_v6.audit_log import AuditLog
+from gatekeeper_eos_v6.policy import GatekeeperPolicy
+from gatekeeper_eos_v6.audit_log import AuditLog
 from medical_audit import demographic_parity_difference
 
 

@@ -1,0 +1,4 @@
+# Personal Jarvis — dependencies
+# Install:  pip install -r requirements.txt && python demo.py
+
+-e .
