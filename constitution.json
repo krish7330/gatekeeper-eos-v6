@@ -1,0 +1,25 @@
+{
+    "version": "0.1",
+    "name": "EOS Constitution",
+    "description": "Executable policy ruleset for Personal Jarvis",
+    "rules": [
+        {
+            "id": "allow-read-file-in-workspace",
+            "action": "read_file",
+            "effect": "ALLOW",
+            "condition": "target starts with workspace"
+        },
+        {
+            "id": "block-read-file-outside-workspace",
+            "action": "read_file",
+            "effect": "BLOCK",
+            "condition": "target does not start with workspace"
+        },
+        {
+            "id": "block-unknown-tools",
+            "action": "*",
+            "effect": "BLOCK",
+            "condition": "tool not in allowed_tools"
+        }
+    ]
+}
