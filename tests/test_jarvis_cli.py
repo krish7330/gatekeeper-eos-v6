@@ -96,3 +96,58 @@ class TestJarvisCLI:
         assert result.returncode == 1
         data = json.loads(result.stdout)
         assert data["status"] == "error"
+
+    # --- Medical Audit tests ---
+
+    def test_jarvis_medical_audit_allow(self, project_root: str):
+        """jarvis medical-audit with allowed tool → parity difference printed."""
+        # Swap policy.json to allow medical_audit
+        policy_json = os.path.join(project_root, "policy.json")
+        original = None
+        if os.path.exists(policy_json):
+            with open(policy_json) as f:
+                original = f.read()
+
+        with open(policy_json, "w") as f:
+            json.dump({
+                "version": "0.2",
+                "allowed_tools": ["read_file", "medical_audit"],
+                "workspace": "/workspace",
+            }, f)
+
+        try:
+            result = subprocess.run(
+                [sys.executable, "jarvis.py", "medical-audit", "0.7", "0.5"],
+                capture_output=True, text=True, cwd=project_root,
+            )
+            print(f"stdout: {result.stdout}")
+            print(f"stderr: {result.stderr}")
+
+            assert result.returncode == 0, f"Expected 0, got {result.returncode}: {result.stderr}"
+            assert "Parity difference: 0.2000" in result.stdout
+        finally:
+            if original is not None:
+                with open(policy_json, "w") as f:
+                    f.write(original)
+
+    def test_jarvis_medical_audit_blocked(self, project_root: str):
+        """jarvis medical-audit without allowance → blocked."""
+        # Ensure medical_audit is NOT in allowed_tools (default policy)
+        result = subprocess.run(
+            [sys.executable, "jarvis.py", "medical-audit", "0.7", "0.5"],
+            capture_output=True, text=True, cwd=project_root,
+        )
+        print(f"stdout: {result.stdout}")
+        print(f"stderr: {result.stderr}")
+
+        assert result.returncode == 3, f"Expected 3, got {result.returncode}"
+        data = json.loads(result.stdout)
+        assert data["status"] == "blocked"
+
+    def test_jarvis_medical_audit_bad_args(self, project_root: str):
+        """jarvis medical-audit with invalid args → error."""
+        result = subprocess.run(
+            [sys.executable, "jarvis.py", "medical-audit", "not_a_number"],
+            capture_output=True, text=True, cwd=project_root,
+        )
+        assert result.returncode == 1

@@ -3,9 +3,10 @@
 
 Usage:
     python jarvis.py oracle <pdf_path>
+    python jarvis.py medical-audit <rate1> <rate2>
 
 Flow:
-    User Request → Gatekeeper evaluation → ALLOW? → Dispatch to Oracle → JSON result
+    User Request → Gatekeeper evaluation → ALLOW? → Dispatch to module → Result
 """
 import importlib.util
 import json
@@ -27,6 +28,11 @@ def _print_result(status: str, data: dict, exit_code: int = 0):
     result = {"status": status, **data}
     print(json.dumps(result, indent=2))
     sys.exit(exit_code)
+
+
+def _print_plain(message: str):
+    """Print plain text result (non-JSON modules)."""
+    print(message)
 
 
 def cmd_oracle(args: list[str], policy: GatekeeperPolicy):
@@ -55,10 +61,37 @@ def cmd_oracle(args: list[str], policy: GatekeeperPolicy):
     })
 
 
+def cmd_medical_audit(args: list[str], policy: GatekeeperPolicy):
+    """Medical AI Audit: compute demographic parity difference."""
+    if len(args) < 2:
+        print("Usage: python jarvis.py medical-audit <group1_rate> <group2_rate>", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        rate1 = float(args[0])
+        rate2 = float(args[1])
+    except ValueError:
+        print("Error: Rates must be floating-point numbers.", file=sys.stderr)
+        sys.exit(1)
+
+    # Gatekeeper gate
+    decision = policy.evaluate_action({"tool": "medical_audit"})
+    if decision["status"] == "BLOCK":
+        _print_result("blocked", {
+            "reason": decision.get("reason", "Not authorized."),
+            "tool": "medical_audit",
+        }, 3)
+
+    # Dispatch to Medical AI
+    from medical_audit import demographic_parity_difference
+    diff = demographic_parity_difference(rate1, rate2)
+    _print_plain(f"Parity difference: {diff:.4f}")
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: python jarvis.py <module> [args...]", file=sys.stderr)
-        print("Modules: oracle", file=sys.stderr)
+        print("Modules: oracle, medical-audit", file=sys.stderr)
         sys.exit(1)
 
     policy = GatekeeperPolicy()
@@ -67,10 +100,12 @@ def main():
 
     if module == "oracle":
         cmd_oracle(args, policy)
+    elif module == "medical-audit":
+        cmd_medical_audit(args, policy)
     else:
         _print_result("error", {
             "error": f"Unknown module: '{module}'",
-            "available": ["oracle"],
+            "available": ["oracle", "medical-audit"],
         }, 1)
 
 
