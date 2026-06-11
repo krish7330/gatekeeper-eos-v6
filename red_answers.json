@@ -1,0 +1,67 @@
+{
+  "version": "0.1",
+  "source": "oracle_1Z0-082.pdf",
+  "total_spans": 4,
+  "spans": [
+    {
+      "page": 1,
+      "text": "A. Indexes can be created on one or more columns",
+      "color": [
+        255,
+        0,
+        0
+      ],
+      "bbox": [
+        72.0,
+        167.10000610351562,
+        344.13592529296875,
+        183.58799743652344
+      ]
+    },
+    {
+      "page": 1,
+      "text": "Answer: A",
+      "color": [
+        255,
+        0,
+        0
+      ],
+      "bbox": [
+        72.0,
+        247.10000610351562,
+        126.68399047851562,
+        263.5880126953125
+      ]
+    },
+    {
+      "page": 1,
+      "text": "Correct: CREATE TABLE employees (id NUMBER);",
+      "color": [
+        255,
+        0,
+        0
+      ],
+      "bbox": [
+        72.0,
+        327.1000061035156,
+        348.719970703125,
+        343.5880126953125
+      ]
+    },
+    {
+      "page": 1,
+      "text": "ASC (Ascending) is the default",
+      "color": [
+        255,
+        0,
+        0
+      ],
+      "bbox": [
+        72.0,
+        397.1000061035156,
+        235.40396118164062,
+        413.5880126953125
+      ]
+    }
+  ]
+}
