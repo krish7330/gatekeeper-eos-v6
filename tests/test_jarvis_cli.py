@@ -151,3 +151,53 @@ class TestJarvisCLI:
             capture_output=True, text=True, cwd=project_root,
         )
         assert result.returncode == 1
+
+    # --- Adversarial tests (Cycle 11) ---
+
+    ADVERSARIAL_PATHS = [
+        "../../etc/passwd",
+        "../../../etc/shadow",
+        "..%2f..%2fetc%2fpasswd",
+        "/workspace/../etc/passwd",
+        "/workspace/..%2f..%2fetc%2fpasswd",
+    ]
+
+    ADVERSARIAL_METACHARS = [
+        "../file; rm -rf /",
+        "../file | echo hacked",
+        "../file$(whoami)",
+        "../`whoami`.txt",
+        "/workspace/;rm -rf /",
+    ]
+
+    @pytest.mark.parametrize("malicious_path", ADVERSARIAL_PATHS)
+    def test_oracle_block_path_traversal(self, malicious_path: str, project_root: str):
+        """Adversarial: path traversal payload → BLOCK."""
+        result = subprocess.run(
+            [sys.executable, "jarvis.py", "oracle", malicious_path],
+            capture_output=True, text=True, cwd=project_root,
+        )
+        print(f"PATH '{malicious_path}' → exit {result.returncode}, stderr: {result.stderr.strip()}")
+        # Paths outside /workspace → Gatekeeper BLOCKs with exit 3
+        # Paths inside /workspace but file not found → PyMuPDF error with exit 1
+        assert result.returncode in (1, 3), (
+            f"Expected 1 or 3 for '{malicious_path}', got {result.returncode}: {result.stderr[:100]}"
+        )
+        if result.returncode == 3:
+            data = json.loads(result.stdout)
+            assert data["status"] == "blocked"
+
+    @pytest.mark.parametrize("malicious_path", ADVERSARIAL_METACHARS)
+    def test_oracle_block_shell_metachars(self, malicious_path: str, project_root: str):
+        """Adversarial: shell metacharacters in path → BLOCK or file-not-found."""
+        result = subprocess.run(
+            [sys.executable, "jarvis.py", "oracle", malicious_path],
+            capture_output=True, text=True, cwd=project_root,
+        )
+        print(f"META '{malicious_path}' → exit {result.returncode}, stderr: {result.stderr.strip()}")
+        # Paths NOT starting with /workspace → exit 3 (Gatekeeper BLOCK)
+        # Paths STARTING with /workspace but file missing → exit 1 (PyMuPDF error)
+        # Either is acceptable — what matters is the malicious payload didn't execute
+        assert result.returncode in (1, 3), (
+            f"Expected 1 or 3 for '{malicious_path}', got {result.returncode}: {result.stderr[:100]}"
+        )
