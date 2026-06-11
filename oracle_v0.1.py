@@ -5,6 +5,9 @@ Oracle v0.1 — Red text extractor for Oracle 1Z0-082 PDF.
 Extracts spans of red-colored text from a PDF and writes them
 to red_answers.json in a binary schema.
 
+Gatekeeper integration: before reading, Oracle requests policy evaluation.
+ALLOW → proceed. BLOCK → abort.
+
 Usage:
     python oracle_v0.1.py <path_to_pdf>
 """
@@ -12,6 +15,12 @@ Usage:
 import sys
 import json
 import fitz  # PyMuPDF
+
+# Gatekeeper integration
+from src.gatekeeper_eos_v6.policy import GatekeeperPolicy
+
+# Default policy (config-driven from policy.json)
+_gatekeeper = GatekeeperPolicy()
 
 # Red color thresholds
 # PyMuPDF stores color as packed integer 0xRRGGBB (0–255 per channel)
@@ -79,12 +88,21 @@ def extract_red_spans(pdf_path: str) -> list[dict]:
     return red_spans
 
 
-def main():
-    if len(sys.argv) < 2:
+def main(policy: GatekeeperPolicy | None = None):
+    if len(sys.argv) < 2 and policy is None:
         print("Usage: python oracle_v0.1.py <path_to_pdf>", file=sys.stderr)
         sys.exit(1)
 
-    pdf_path = sys.argv[1]
+    pdf_path = sys.argv[1] if len(sys.argv) >= 2 else ""
+
+    # Gatekeeper gate: evaluate before reading
+    gate = policy or _gatekeeper
+    decision = gate.evaluate_action({"tool": "read_file", "target": pdf_path})
+    if decision["status"] == "BLOCK":
+        print(f"Gatekeeper: BLOCKED — {decision.get('reason', 'Not authorized.')}", file=sys.stderr)
+        sys.exit(3)
+
+    print(f"Gatekeeper: ALLOW — {decision.get('reason', '')}")
     print(f"Extracting red spans from: {pdf_path}")
 
     spans = extract_red_spans(pdf_path)
