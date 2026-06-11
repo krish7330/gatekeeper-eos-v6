@@ -53,6 +53,11 @@ class GatekeeperPolicy:
         except (FileNotFoundError, json.JSONDecodeError):
             self.constitution_rules = []
 
+    @staticmethod
+    def _normalize_condition(condition: str) -> str:
+        """Normalize whitespace in condition string for robust matching."""
+        return " ".join(condition.split())
+
     def _constitution_decision(self, tool: str | None, target: str) -> dict | None:
         """Evaluate constitution rules. Returns decision dict or None if no rule matches."""
         for rule in self.constitution_rules:
@@ -61,14 +66,14 @@ class GatekeeperPolicy:
             if rule_action != "*" and rule_action != tool:
                 continue
 
-            condition = rule.get("condition", "")
+            condition = self._normalize_condition(rule.get("condition", ""))
             matched = False
 
-            if "target starts with workspace" in condition:
+            if condition == "target starts with workspace":
                 matched = bool(self.workspace and target.startswith(self.workspace))
-            elif "target does not start with workspace" in condition:
+            elif condition == "target does not start with workspace":
                 matched = bool(not self.workspace or not target.startswith(self.workspace))
-            elif "tool not in allowed_tools" in condition:
+            elif condition == "tool not in allowed_tools":
                 matched = bool(tool not in self.allowed_tools)
             else:
                 # Unknown condition — skip this rule
