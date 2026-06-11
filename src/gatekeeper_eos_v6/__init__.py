@@ -1,15 +1,6 @@
-"""Agent Factory — Generate multi-agent AI systems from YAML batch specs."""
+"""Personal Jarvis v1.0 — Gatekeeper + Constitution + Audit Log.
 
-from gatekeeper_eos_v6.agentic import (
-    LLMProvider,
-    MockLLMProvider,
-    RuleFallbackLLMProvider,
-    AgentCore,
-    AgentAction,
-    ActionSelector,
-    WorldState,
-    StopReason,
-    run_agent_loop,
-)
-from gatekeeper_eos_v6.providers import OpenAIProvider, AnthropicProvider, GoogleProvider, OpenRouterProvider, create_llm_provider
-from gatekeeper_eos_v6.snapshot import SnapshotEntry, SnapshotIndex, SnapshotLedger, take_snapshot, context_revalidation
+Submodules may be imported directly:
+    from gatekeeper_eos_v6.policy import GatekeeperPolicy
+    from gatekeeper_eos_v6.audit_log import AuditLog
+"""
