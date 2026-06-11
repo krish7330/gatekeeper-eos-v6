@@ -49,16 +49,46 @@ Personal Jarvis
 ## Development Strategy
 
 - **Phase 1:** Ship tiny artifacts. ✅
-- **Phase 2:** Compose artifacts into systems. ✅ (Oracle → Gatekeeper)
+- **Phase 2:** Compose artifacts into systems. ✅
 - **Phase 3:** Compose systems into Jarvis.
 
 ## Success Metrics
 
 | Metric | Current | Target |
 |--------|---------|--------|
-| Speed Integer | 4 | 5–10 |
+| Speed Integer | 5 | 10 |
 | Integration Depth | 2 | 3 |
 | Scope Violations | 0 | 0 |
+
+## Pre-Staged Cycles
+
+### Cycle 6 — Integration Depth 3
+
+**Artifact:** `jarvis.py` CLI — User Request → Gatekeeper → Oracle → Structured Result
+
+**Contract:**
+- `python jarvis.py oracle <pdf_path>` triggers Gatekeeper evaluation
+- ALLOW → dispatch to Oracle `extract_red_spans()` → print JSON to stdout
+- BLOCK → exit 3 with reason
+- One end-to-end test
+
+### Cycle 7 — Medical AI Audit v0.1
+
+**Artifact:** `medical_audit.py` — single fairness metric
+
+**Contract:**
+- `demographic_parity_difference(group1_rate, group2_rate) → float`
+- One test: `test_parity_zero_when_equal`
+- No dataset loading, no calibration curves
+
+### Cycle 8 — EOS Constitution v0.1
+
+**Artifact:** `constitution.json` — executable policy ruleset
+
+**Contract:**
+- JSON with rule objects (action, condition, effect)
+- One test asserting it loads and validates
+- Not a philosophy doc — a file Gatekeeper can consume
 
 ## Daily Question
 
