@@ -1,0 +1,126 @@
+# gate_policy.yaml
+# Single source of truth for Jarvis v2.1 risk policy classification.
+#
+# Every action is classified into exactly one policy:
+#   - auto-approve       → passes immediately, audit only
+#   - auto-approve-audit → passes immediately, elevated audit detail
+#   - always-confirm     → requires explicit user confirmation
+#   - blocked            → rejected at schema level
+#
+# Parameter escalation rules override the action's default to always-confirm.
+# See JARVIS_V2_1_SPEC.md §3 for the full design.
+
+# ── Policy version ──────────────────────────────────────────────────────────
+version: "2.1"
+updated: "2026-06-11"
+
+# ── Target definitions ──────────────────────────────────────────────────────
+targets:
+  PC:
+    description: "Desktop actions via BetterTouchTool (macOS) or EventGhost (Windows)"
+    actions:
+      OPEN_URL:
+        policy: auto-approve
+        notes: "https only; IP/localhost URLs escalate to always-confirm"
+      MEDIA_CONTROL:
+        policy: auto-approve
+      LAUNCH_APP:
+        policy: auto-approve-audit
+      EXECUTE_MACRO:
+        policy: auto-approve-audit
+      LOCK_WORKSTATION:
+        policy: always-confirm
+      DELETE_FILE:
+        policy: always-confirm
+      SHUTDOWN_PC:
+        policy: always-confirm
+      SEND_KEYSTROKE:
+        policy: always-confirm
+      RUN_SCRIPT:
+        policy: always-confirm
+        notes: "Non-whitelisted script names escalate; parameter checked for shell metacharacters"
+        whitelisted_scripts:
+          - daily-backup
+          - sync-photos
+          - update-hosts
+
+  HOME:
+    description: "Smart home actions via Home Assistant"
+    actions:
+      TURN_ON:
+        policy: auto-approve
+      TURN_OFF:
+        policy: auto-approve
+      SET_BRIGHTNESS:
+        policy: auto-approve
+      SET_SCENE:
+        policy: auto-approve
+      LOCK_DOOR:
+        policy: auto-approve
+      SET_TEMPERATURE:
+        policy: auto-approve-audit
+      UNLOCK_DOOR:
+        policy: always-confirm
+      DISABLE_ALARM:
+        policy: always-confirm
+
+# ── Parameter escalation rules ──────────────────────────────────────────────
+# These override the action's default policy to always-confirm.
+parameter_escalation:
+  - description: "Contains shell metacharacters"
+    pattern: '[;&|`$(){}]'
+  - description: "References paths outside whitelisted directories"
+    pattern: "^~|^/tmp|^/var|^/etc"
+  - description: "RUN_SCRIPT with non-whitelisted script alias"
+    match:
+      action: RUN_SCRIPT
+      condition: "parameter not in whitelisted_scripts"
+  - description: "OPEN_URL with non-https scheme"
+    match:
+      action: OPEN_URL
+      condition: "parameter does not start with https://"
+  - description: "OPEN_URL with IP address or localhost"
+    match:
+      action: OPEN_URL
+      condition: "parameter matches ^https?://(\\d{1,3}\\.){3}\\d{1,3}|localhost"
+
+# ── Routine policies ────────────────────────────────────────────────────────
+# Routines are pre-approved command sequences. Each routine's policy is the
+# strictest policy among its constituent commands.
+routines:
+  start-workday:
+    policy: auto-approve-audit
+    commands:
+      - target: HOME
+        action: TURN_ON
+        parameter: desk_lamp
+      - target: PC
+        action: LAUNCH_APP
+        parameter: Slack
+      - target: PC
+        action: OPEN_URL
+        parameter: "https://calendar.google.com"
+  movie-time:
+    policy: auto-approve-audit
+    commands:
+      - target: HOME
+        action: SET_BRIGHTNESS
+        parameter: "50"
+      - target: HOME
+        action: TURN_ON
+        parameter: tv
+      - target: PC
+        action: MEDIA_CONTROL
+        parameter: mute
+  im-leaving:
+    policy: auto-approve
+    commands:
+      - target: HOME
+        action: TURN_OFF
+        parameter: all_lights
+      - target: HOME
+        action: SET_TEMPERATURE
+        parameter: eco
+      - target: PC
+        action: LOCK_WORKSTATION
+        parameter: ""

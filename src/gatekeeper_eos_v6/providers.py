@@ -30,10 +30,16 @@ import random
 import time
 import enum
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 # Local imports — the LLMProvider ABC lives in agentic.py
 from gatekeeper_eos_v6.agentic import LLMProvider
+from gatekeeper_eos_v6.subsystems import ProviderTrustScorer
+
+
+# Module-level trust scorer (initialized lazily)
+_TRUST_SCORER: ProviderTrustScorer | None = None
 
 
 # ===========================================================================
@@ -905,3 +911,76 @@ def create_llm_provider(
 
         return MockLLMProvider(model=model, default_action=kwargs.get("default_action"))
     raise ValueError(f"Unknown provider_type: {provider_type!r}. Supported: openai, anthropic, google, openrouter, mock")
+
+
+# ---------------------------------------------------------------------------
+# Drift tracking integration
+# ---------------------------------------------------------------------------
+
+
+def get_trust_scorer() -> ProviderTrustScorer:
+    """Get or create the module-level trust scorer (lazy init)."""
+    global _TRUST_SCORER
+    if _TRUST_SCORER is None:
+        ledger_path = Path("/var/log/gatekeeper/provider_trust_ledger.json")
+        _TRUST_SCORER = ProviderTrustScorer(ledger_path)
+    return _TRUST_SCORER
+
+
+def track_provider_drift(
+    provider_id: str,
+    result: str,
+    expected_pattern: str | None = None,
+    confidence: float = 0.0,
+) -> None:
+    """Track drift for an LLM provider based on result analysis.
+
+    Args:
+        provider_id: Provider identifier (e.g. "openai-gpt-4o-mini").
+        result: LLM response string.
+        expected_pattern: Expected pattern to match (optional).
+        confidence: Confidence score from LLM (0.0-1.0).
+    """
+    scorer = get_trust_scorer()
+
+    if confidence < 0.5:
+        scorer.record_drift(
+            provider_id=provider_id,
+            drift_type="false_positive",
+            severity=1.0 - confidence,
+            metadata={"confidence": confidence, "result": result[:100]},
+        )
+
+    if expected_pattern and expected_pattern not in result:
+        scorer.record_drift(
+            provider_id=provider_id,
+            drift_type="hallucinated_finding",
+            severity=0.9,
+            metadata={"expected": expected_pattern, "result": result[:100]},
+        )
+
+
+class DriftTrackingProvider(LLMProvider):
+    """LLM provider wrapper that tracks drift automatically.
+
+    Wraps an inner provider and records drift events after each generate()
+    call based on simple heuristics (empty/short responses).
+    """
+
+    def __init__(self, inner_provider: LLMProvider) -> None:
+        super().__init__(model=inner_provider.model)
+        self._inner = inner_provider
+        self._provider_id = inner_provider.model
+
+    def generate(self, prompt: str) -> str:
+        """Generate with drift tracking."""
+        result = self._inner.generate(prompt)
+
+        if not result or len(result) < 10:
+            track_provider_drift(
+                provider_id=self._provider_id,
+                result=result,
+                confidence=0.0,
+            )
+
+        return result

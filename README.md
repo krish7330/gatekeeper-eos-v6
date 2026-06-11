@@ -60,6 +60,51 @@ python -m gatekeeper_eos_v6 specs/batch.yaml
 
 ---
 
+## Security Subsystems
+
+Gatekeeper-eos-v6 includes three production-ready security subsystems for
+agentic workflows:
+
+| Subsystem | Purpose | File |
+|-----------|---------|------|
+| **Reputation/Verification** | Cross-session asset reputation scoring | `subsystems/reputation_verification.py` |
+| **Signed Attestations** | HMAC-SHA256 signatures for snapshots | `subsystems/signed_attestations.py` |
+| **Provider Trust Scorer** | LLM drift/hallucination tracking | `subsystems/provider_trust_scorer.py` |
+
+### Quick Start
+
+```bash
+# Configure paths (defaults to /tmp/gatekeeper/)
+export ATTESTATION_LEDGER_PATH="/tmp/gatekeeper/attestations.json"
+export REPUTATION_LEDGER_PATH="/tmp/gatekeeper/reputation.json"
+export TRUST_LEDGER_PATH="/tmp/gatekeeper/trust.json"
+
+# Run subsystem tests
+pytest tests/test_subsystems_*.py -v
+```
+
+```python
+from gatekeeper_eos_v6.subsystems import ReputationTracker, AttestationLedger, ProviderTrustScorer
+from gatekeeper_eos_v6.subsystems.config import get_reputation_ledger_path
+
+# Track asset reputation
+rep = ReputationTracker(get_reputation_ledger_path())
+rep.observe_asset("sess-1", "10.0.0.1:80", {"is_positive": True})
+
+# Sign snapshots
+att = AttestationLedger(/tmp/ledger.json, /tmp/key.pem)
+a = att.create_attestation("sess-1", "ckpt-1", {"ports": [80]})
+assert att.verify_attestation(a)
+
+# Score provider trust
+trust = ProviderTrustScorer()
+trust.record_drift("provider-1", "hallucinated_finding", 0.9)
+```
+
+See [`docs/SUBSYSTEMS.md`](docs/SUBSYSTEMS.md) for full documentation.
+
+---
+
 ## File Bridge Workflow
 
 Terminal output in Freebuff/Codebuff is not reliably copyable. Use the **file bridge** instead: all output is automatically saved to files in `logs/` so you can open them in any editor and copy/paste cleanly.

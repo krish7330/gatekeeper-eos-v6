@@ -21,6 +21,7 @@ SessionDef:
 from __future__ import annotations
 
 import re
+import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -38,6 +39,20 @@ from gatekeeper_eos_v6.checkpoint import (
     CheckpointError,
 )
 from gatekeeper_eos_v6.locks import LockManager, Mutex, LockType, LockError
+from gatekeeper_eos_v6.campaign_integration import (
+    validate_discovered_asset,
+    record_asset_discovery,
+    record_provider_drift,
+)
+from gatekeeper_eos_v6.subsystems.config import (
+    apply_subsystems_config,
+    ensure_ledger_dirs,
+    load_subsystems_config,
+)
+
+
+# Initialize ledger directories at module load
+ensure_ledger_dirs()
 
 
 # ---------------------------------------------------------------------------
@@ -558,11 +573,22 @@ class CampaignExecutor:
         checkpoint_dir: str | Path | None = None,
         lock_manager: LockManager | None = None,
         snapshot_dir: str | Path | None = None,
+        use_subsystems: bool = False,
+        subsystems_config: dict[str, Any] | None = None,
     ) -> None:
         self.campaign = campaign
         self.checkpoint_dir = Path(checkpoint_dir) if checkpoint_dir else Path("checkpoints")
         self.lock_manager = lock_manager or LockManager.default()
         self.snapshot_dir = Path(snapshot_dir) if snapshot_dir else None
+        self.use_subsystems = use_subsystems
+
+        # Auto-load YAML config when subsystems are enabled
+        if use_subsystems and subsystems_config is None:
+            subsystems_config = load_subsystems_config()
+        if subsystems_config is not None:
+            subsystems_config = apply_subsystems_config(subsystems_config if use_subsystems else {"enabled": False})
+        self.subsystems_config: dict[str, Any] = subsystems_config or {}
+
         self._resolver = DependencyResolver(campaign)
 
     def resolve_sessions(self) -> list[list[str]]:
@@ -649,6 +675,7 @@ class CampaignExecutor:
             CampaignValidationError: If session does not have an inline plan with agentic_config.
         """
         from gatekeeper_eos_v6.agentic import AgentCore, PolicyGate, run_agent_loop
+        import copy as _copy
 
         if not isinstance(session.plan, dict):
             raise CampaignValidationError(
@@ -697,18 +724,49 @@ class CampaignExecutor:
         # --- Auto-snapshot setup ---
         snapshot_ledger = None
         if self.snapshot_dir is not None:
-            from gatekeeper_eos_v6.snapshot import SnapshotLedger, take_snapshot, context_revalidation
+            from gatekeeper_eos_v6.snapshot import (
+                SnapshotLedger,
+                take_snapshot,
+                take_snapshot_with_attestation,
+                context_revalidation,
+            )
 
             ledger_path = self.snapshot_dir / f"{session.session_id}_snapshots.json"
             snapshot_ledger = SnapshotLedger(ledger_path)
 
+            # Helper: take snapshot with optional attestation (subsystems enabled)
+            def _take_snapshot(
+                checkpoint_id: str,
+                drift_score: int = 0,
+                invariants_satisfied: list[str] | None = None,
+                conversation_summary: str = "",
+            ) -> Any:
+                """Take snapshot (and attestation if use_subsystems is True)."""
+                if self.use_subsystems:
+                    snapshot, attestation = take_snapshot_with_attestation(
+                        ledger=snapshot_ledger,
+                        session_id=session.session_id,
+                        checkpoint_id=checkpoint_id,
+                        working_memory=_copy.deepcopy(agent.state.to_dict()),
+                        tool_call_history=[e.to_dict() for e in agent.evidence_log],
+                        conversation_summary=conversation_summary,
+                        drift_score=drift_score,
+                        invariants_satisfied=invariants_satisfied or [],
+                    )
+                    return snapshot
+                return take_snapshot(
+                    agent=agent,
+                    session_id=session.session_id,
+                    checkpoint_id=checkpoint_id,
+                    ledger=snapshot_ledger,
+                    drift_score=drift_score,
+                    invariants_satisfied=invariants_satisfied,
+                    conversation_summary=conversation_summary,
+                )
+
             # Initial snapshot after checkpoint
-            take_snapshot(
-                agent=agent,
-                session_id=session.session_id,
+            _take_snapshot(
                 checkpoint_id="CKPT-0000-init",
-                ledger=snapshot_ledger,
-                drift_score=0,
                 invariants_satisfied=["INIT"],
                 conversation_summary=f"Agent {agent.decision_strategy} session started. Objective: {agent.objective[:120]}",
             )
@@ -721,12 +779,8 @@ class CampaignExecutor:
                 # Snapshot before the step (capture pre-mutation state)
                 ckpt_id = f"CKPT-{_snap_counter[0]:04d}-pre"
                 _snap_counter[0] += 1
-                take_snapshot(
-                    agent=agent,
-                    session_id=session.session_id,
+                _take_snapshot(
                     checkpoint_id=ckpt_id,
-                    ledger=snapshot_ledger,
-                    drift_score=0,
                     invariants_satisfied=["BEFORE_STEP"],
                     conversation_summary=f"Before action: {action.tool}/{action.command}",
                 )
@@ -739,7 +793,7 @@ class CampaignExecutor:
 
         # --- Auto-snapshot: post-loop recovery & final snapshot ---
         if snapshot_ledger is not None:
-            from gatekeeper_eos_v6.snapshot import take_snapshot, context_revalidation as _do_restore
+            from gatekeeper_eos_v6.snapshot import context_revalidation as _do_restore
             import sys
 
             # If halted due to drift, attempt context_revalidation
@@ -747,25 +801,21 @@ class CampaignExecutor:
             restore_warnings: list[str] = []
             if stop_reason and "drift" in str(stop_reason.value):
                 try:
-                    entry, warnings = _do_restore(
+                    entry, restore_entry_warnings = _do_restore(
                         agent=agent,
                         session_id=session.session_id,
                         ledger=snapshot_ledger,
                         max_drift_score=0,
                     )
                     restored = True
-                    restore_warnings.extend(warnings)
+                    restore_warnings.extend(restore_entry_warnings)
                     stop_reason = agent.stop_reason  # Updated by restore
 
                     # Snapshot after restore
-                    take_snapshot(
-                        agent=agent,
-                        session_id=session.session_id,
+                    _take_snapshot(
                         checkpoint_id="CKPT-RESTORE",
-                        ledger=snapshot_ledger,
-                        drift_score=0,
                         invariants_satisfied=["RESTORED"],
-                        conversation_summary=f"Restored from checkpoint {entry.checkpoint_id} ({len(warnings)} warnings)",
+                        conversation_summary=f"Restored from checkpoint {entry.checkpoint_id} ({len(restore_entry_warnings)} warnings)",
                     )
                 except Exception as e:
                     restore_warnings.append(f"Restore failed: {e}")
@@ -775,11 +825,8 @@ class CampaignExecutor:
             final_drift_score = 1 if not restored and restore_warnings else 0
 
             # Final snapshot after loop
-            take_snapshot(
-                agent=agent,
-                session_id=session.session_id,
+            _take_snapshot(
                 checkpoint_id="CKPT-FINAL",
-                ledger=snapshot_ledger,
                 drift_score=final_drift_score,
                 invariants_satisfied=["FINAL"],
                 conversation_summary=f"Session complete. Steps: {agent.step}, reason: {stop_reason.value if stop_reason else 'completed'}",
@@ -813,5 +860,51 @@ class CampaignExecutor:
                 },
                 checkpoint_dir=self.checkpoint_dir,
             )
+
+        # --- Subsystem integration: asset validation & drift tracking ---
+        if self.use_subsystems:
+            session_id_str = session.session_id
+
+            # Read config-driven thresholds
+            rep_cfg = self.subsystems_config.get("reputation", {})
+            trust_cfg = self.subsystems_config.get("provider_trust", {})
+            min_reputation = rep_cfg.get("min_score", 0.6)
+            min_severity = trust_cfg.get("min_severity", 0.1)
+
+            # Validate discovered assets against reputation tracking
+            for asset in final_state.discovered_assets:
+                valid, reason = validate_discovered_asset(
+                    asset, min_reputation=min_reputation,
+                )
+                if not valid:
+                    warnings.warn(
+                        f"[campaign] Session '{session_id_str}': skipping asset "
+                        f"'{asset}' — {reason}"
+                    )
+                else:
+                    record_asset_discovery(
+                        session_id=session_id_str,
+                        asset_id=asset,
+                        metadata={
+                            "discovery_method": "agentic",
+                            "stop_reason": stop_reason.value if stop_reason else "completed",
+                        },
+                    )
+
+            # Record provider drift if an LLM provider was used
+            if agent.llm_provider is not None:
+                provider_id = agent.llm_provider.model
+                retries = getattr(agent.llm_provider, "retry_count", 0)
+                severity = min(retries * 0.2, 1.0)
+                if retries > 0 and severity >= min_severity:
+                    record_provider_drift(
+                        provider_id=provider_id,
+                        drift_type="false_positive",
+                        severity=severity,
+                        metadata={
+                            "retry_count": retries,
+                            "total_retry_delay": getattr(agent.llm_provider, "total_retry_delay", 0.0),
+                        },
+                    )
 
         return final_state, evidence_log, stop_reason

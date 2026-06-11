@@ -26,6 +26,11 @@ from pathlib import Path
 from typing import Any
 
 from gatekeeper_eos_v6.agentic import WorldState, EvidenceEntry, AgentAction, AgentCore
+from gatekeeper_eos_v6.subsystems import AttestationLedger, AttestationError
+
+
+# Module-level attestation ledger (initialized lazily)
+_ATTESTATION_LEDGER: AttestationLedger | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -607,3 +612,81 @@ def context_revalidation(
             )
 
     return entry, warnings
+
+
+# ---------------------------------------------------------------------------
+# Signed attestation integration
+# ---------------------------------------------------------------------------
+
+
+def get_attestation_ledger() -> AttestationLedger:
+    """Get or create the module-level attestation ledger (lazy init)."""
+    global _ATTESTATION_LEDGER
+    if _ATTESTATION_LEDGER is None:
+        private_key_path = Path("/etc/gatekeeper/attestation_key")
+        ledger_path = Path("/var/log/gatekeeper/attestations.json")
+        _ATTESTATION_LEDGER = AttestationLedger(ledger_path, private_key_path)
+    return _ATTESTATION_LEDGER
+
+
+def take_snapshot_with_attestation(
+    ledger: SnapshotLedger,
+    session_id: str,
+    checkpoint_id: str,
+    working_memory: dict[str, Any],
+    tool_call_history: list[dict[str, Any]] | None = None,
+    conversation_summary: str = "",
+    drift_score: int = 0,
+    invariants_satisfied: list[str] | None = None,
+    approval_token_id: str = "",
+) -> tuple[SnapshotEntry, Any]:
+    """Take a snapshot and create a signed attestation for it.
+
+    Args:
+        ledger: SnapshotLedger instance.
+        session_id: Session identifier.
+        checkpoint_id: Checkpoint identifier.
+        working_memory: Serialized agent state.
+        tool_call_history: List of action dicts.
+        conversation_summary: Optional text summary.
+        drift_score: Drift score at snapshot time (0 = clean).
+        invariants_satisfied: List of invariant IDs.
+        approval_token_id: Optional approval token.
+
+    Returns:
+        Tuple of (SnapshotEntry, SignedAttestation).
+    """
+    # Create regular snapshot
+    snapshot = ledger.append(
+        session_id=session_id,
+        checkpoint_id=checkpoint_id,
+        working_memory=working_memory,
+        tool_call_history=tool_call_history,
+        conversation_summary=conversation_summary,
+        drift_score=drift_score,
+        invariants_satisfied=invariants_satisfied,
+        approval_token_id=approval_token_id,
+    )
+
+    # Create signed attestation
+    attestation_ledger = get_attestation_ledger()
+    state = {
+        "working_memory": working_memory,
+        "tool_call_history": tool_call_history or [],
+        "conversation_summary": conversation_summary,
+        "drift_score": drift_score,
+        "snapshot_sequence": snapshot.sequence,
+    }
+    metadata = {
+        "checkpoint_id": checkpoint_id,
+        "invariants_satisfied": invariants_satisfied or [],
+        "approval_token_id": approval_token_id,
+    }
+    attestation = attestation_ledger.create_attestation(
+        session_id=session_id,
+        checkpoint_id=checkpoint_id,
+        state=state,
+        metadata=metadata,
+    )
+
+    return snapshot, attestation

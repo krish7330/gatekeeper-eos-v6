@@ -1,0 +1,86 @@
+# ============================================================================
+# Subsystem Configuration — gatekeeper-eos-v6
+# ============================================================================
+#
+# This file configures the three security subsystems:
+#   1. Reputation/Verification — cross-session asset reputation scoring
+#   2. Signed Attestations     — HMAC-SHA256 signatures for snapshots
+#   3. Provider Trust Scorer   — LLM drift/hallucination tracking
+#
+# All paths can be overridden via environment variables at runtime.
+# See src/gatekeeper_eos_v6/subsystems/config.py for env-var names.
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# Global enable/disable flag — toggles all subsystems at once
+# ---------------------------------------------------------------------------
+enabled: true
+
+# ---------------------------------------------------------------------------
+# Reputation tracking — asset trust scoring across sessions
+# ---------------------------------------------------------------------------
+reputation:
+  # Minimum reputation score (0.0-1.0) for an asset to be accepted.
+  # Assets below this threshold are flagged. Set to 0.0 to disable filtering.
+  min_score: 0.6
+
+  # Time-based decay: after this many days without observations,
+  # the reputation score begins decaying toward the Bayesian prior (0.5).
+  # Set to 0 to disable time-based decay.
+  decay_days: 30
+
+  # Fractional decay per day after the decay threshold is exceeded.
+  # The score moves toward 0.5 at this rate each day.
+  # Example: 0.05 means 5% of the distance to 0.5 per day.
+  decay_rate: 0.05
+
+  # Bayesian prior — the default score for newly observed assets.
+  # 0.5 means "no information" (neutral).
+  prior: 0.5
+
+# ---------------------------------------------------------------------------
+# Provider trust scoring — LLM provider drift/hallucination tracking
+# ---------------------------------------------------------------------------
+provider_trust:
+  # Minimum trust score (0.0-1.0) required for a provider to be selected.
+  # Providers below this threshold are skipped during action selection.
+  min_score: 0.7
+
+  # Drift severity threshold (0.0-1.0). Drift events with severity below
+  # this value are recorded but do not contribute to the provider's
+  # "flagged" status. Set to 0.0 to flag all drifts.
+  min_severity: 0.1
+
+  # Maximum number of drift events stored per provider before the oldest
+  # are pruned (circular buffer). Set to 0 for unlimited.
+  max_drift_events: 100
+
+# ---------------------------------------------------------------------------
+# Signed attestations — HMAC-SHA256 signature configuration
+# ---------------------------------------------------------------------------
+attestations:
+  # Enable or disable attestation creation. When disabled, snapshots are
+  # taken without HMAC signing (faster but no cryptographic proof).
+  enabled: true
+
+  # HMAC algorithm to use. Supported: sha256 (default).
+  # sha384 and sha512 are also available.
+  algorithm: sha256
+
+  # Default path for the private key file. Override via
+  # ATTESTATION_PRIVATE_KEY_PATH env var at runtime.
+  private_key_path: /tmp/gatekeeper/private_key
+
+# ---------------------------------------------------------------------------
+# Ledger file paths — where subsystem state is persisted on disk
+#
+# All paths can be overridden at runtime via environment variables:
+#   ATTESTATION_LEDGER_PATH
+#   REPUTATION_LEDGER_PATH
+#   TRUST_LEDGER_PATH
+#   ATTESTATION_PRIVATE_KEY_PATH
+# ---------------------------------------------------------------------------
+ledger_paths:
+  attestations: /tmp/gatekeeper/attestations.json
+  reputation: /tmp/gatekeeper/reputation.json
+  trust: /tmp/gatekeeper/provider_trust.json

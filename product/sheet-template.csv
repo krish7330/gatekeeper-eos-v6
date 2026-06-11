@@ -1,0 +1,6 @@
+MESSAGE_LEDGER,,,CONVERSATIONS,,,LEADS,,,STATE_DRIFT,,,ERRORS,,,HEALTHMETRICS,
+message_id,ledger_key,from_number,conversation_id,from_number,state,id,from_number,name,timestamp,conversation_id,from_number,error_message,error_type,workflow_id,date,total_messages,processed
+message_body,reply_sent,environment,status,last_message_at,created_at,booking_time,intent,source,expected_state,actual_state,trigger_message,workflow_name,execution_id,last_node,cached_duplicates,cancellations,bookings_completed
+status,state,previous_state,updated_at,,,lead_status,environment,notes,environment,state_note,,severity,environment,timestamp,drift_events,errors_total,distinct_error_types
+state_note,drift_detected,primary_intent,,,,,,,,,,,,,,environment,computed_at
+confidence,processed_at,reply_timestamp,,,,,,,,,,,,,,,
