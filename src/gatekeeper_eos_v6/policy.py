@@ -1,33 +1,40 @@
-"""Gatekeeper v0.3: Constitution-driven policy with policy.json fallback.
+"""Gatekeeper v0.4: Constitution-driven policy with audit logging.
 
 Decision order:
 1. Constitution rules (loaded from constitution.json) — first match wins
 2. Policy config (loaded from policy.json) — whitelist + workspace boundary
 3. Default deny — BLOCK
+
+Every decision is recorded to the audit log with hash-chain integrity.
 """
 import json
 import os
+
+from .audit_log import AuditLog
 
 DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "policy.json")
 DEFAULT_CONSTITUTION_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "constitution.json")
 
 
 class GatekeeperPolicy:
-    """Constitution-driven binary whitelist policy.
+    """Constitution-driven binary whitelist policy with audit logging.
 
     Properties:
     - Constitution rules evaluated first (constitution.json)
     - Fallback to config-driven whitelist + workspace boundary (policy.json)
+    - Every decision recorded to audit log with hash-chain integrity
     - Unknown tool → BLOCK
     - Missing tool → BLOCK
     - Missing config file → failsafe BLOCK ALL
     """
 
     def __init__(self, config_path: str = DEFAULT_CONFIG_PATH,
-                 constitution_path: str | None = DEFAULT_CONSTITUTION_PATH):
+                 constitution_path: str | None = DEFAULT_CONSTITUTION_PATH,
+                 audit_log: AuditLog | None = None):
         self.allowed_tools: set[str] = set()
         self.workspace: str = ""
         self.constitution_rules: list[dict] = []
+        self._audit = audit_log
         self._load_policy(config_path)
         self._load_constitution(constitution_path)
 
@@ -92,32 +99,46 @@ class GatekeeperPolicy:
         """Evaluate an action payload against constitution + policy.
 
         Returns dict with 'status' (ALLOW/BLOCK) and 'reason'.
+        Every decision is recorded to the audit log if configured.
         """
         tool = payload.get("tool")
         target = payload.get("target", "")
+        decision: dict | None = None
 
         # 1. Constitution rules (first match wins)
         constitution = self._constitution_decision(tool, target)
         if constitution is not None:
-            return constitution
+            decision = constitution
 
         # 2. Default deny: No tool specified → BLOCK
-        if tool is None:
-            return {"status": "BLOCK", "reason": "No tool specified."}
+        if decision is None and tool is None:
+            decision = {"status": "BLOCK", "reason": "No tool specified."}
 
         # 3. Default deny: Unknown tool → BLOCK
-        if tool not in self.allowed_tools:
-            return {"status": "BLOCK", "reason": f"Tool '{tool}' not authorized."}
+        if decision is None and tool not in self.allowed_tools:
+            decision = {"status": "BLOCK", "reason": f"Tool '{tool}' not authorized."}
 
         # 4. Workspace boundary: read_file must target within workspace
-        if tool == "read_file" and self.workspace:
+        if decision is None and tool == "read_file" and self.workspace:
             if not target.startswith(self.workspace):
-                return {
+                decision = {
                     "status": "BLOCK",
                     "reason": f"Target '{target}' is outside workspace '{self.workspace}'.",
                 }
 
-        return {
-            "status": "ALLOW",
-            "reason": f"Tool '{tool}' validated against active policy.",
-        }
+        if decision is None:
+            decision = {
+                "status": "ALLOW",
+                "reason": f"Tool '{tool}' validated against active policy.",
+            }
+
+        # Record to audit log
+        if self._audit is not None:
+            self._audit.append(
+                tool=tool,
+                target=target,
+                status=decision["status"],
+                reason=decision["reason"],
+            )
+
+        return decision
